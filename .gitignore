@@ -15,27 +15,12 @@ venv/
 .idea/
 *.swp
 *.swo
+*.tmp
 
 # Logs
 *.log
 
-# Build artifacts
+# Build/dist directories
 build/
 dist/
-target/
-
-# Dependencies
-node_modules/
-.mypy_cache/
-.pytest_cache/
-.coverage
-coverage/
-htmlcov/
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
 ```

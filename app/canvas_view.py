@@ -332,7 +332,7 @@ class TextBoxItem(QGraphicsTextItem):
         self._fill_color = QColor(255, 255, 255)
         self._fill_alpha = 70
         self._border_color = QColor(170, 170, 170)
-        self._border_width = 1
+        self._border_width = 0  # 默认无边框
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -952,6 +952,27 @@ class CanvasView(QGraphicsView):
     def image_items(self) -> List[ImageFrameItem]:
         items = [it for it in self.scene().items() if isinstance(it, ImageFrameItem)]
         return sorted(items, key=lambda i: (i.sceneBoundingRect().top(), i.sceneBoundingRect().left()))
+
+    def label_items(self) -> List[LabelItem]:
+        """获取所有编号项，按从上到下、从左到右排序"""
+        items = [it for it in self.scene().items() if isinstance(it, LabelItem)]
+        return sorted(items, key=lambda i: (i.sceneBoundingRect().top(), i.sceneBoundingRect().left()))
+
+    def text_box_items(self) -> List[TextBoxItem]:
+        """获取所有文本框项，按从上到下、从左到右排序"""
+        items = [it for it in self.scene().items() if isinstance(it, TextBoxItem)]
+        return sorted(items, key=lambda i: (i.sceneBoundingRect().top(), i.sceneBoundingRect().left()))
+
+    def all_canvas_items_ordered(self) -> List[QGraphicsItem]:
+        """获取画布上所有用户添加的项（图片、编号、文本框），按 Z 值和位置排序"""
+        items = []
+        for it in self.scene().items():
+            if it is self.page_rect_item:
+                continue
+            if isinstance(it, (ImageFrameItem, LabelItem, TextBoxItem)):
+                items.append(it)
+        # 先按 ZValue 分组，再按位置排序
+        return sorted(items, key=lambda i: (i.zValue(), i.sceneBoundingRect().top(), i.sceneBoundingRect().left()))
 
     def selected_image_items(self) -> List[ImageFrameItem]:
         items = [it for it in self.scene().selectedItems() if isinstance(it, ImageFrameItem)]
