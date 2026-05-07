@@ -887,6 +887,7 @@ class TextBoxItem(QGraphicsTextItem):
 class CanvasView(QGraphicsView):
     sceneModified = Signal()
     filesDropped = Signal(list)
+    canvasSizeChanged = Signal()
 
     _SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
@@ -937,6 +938,9 @@ class CanvasView(QGraphicsView):
         self.scene().setSceneRect(
             -margin, -margin, self.page_width_px + 2 * margin, self.page_height_px + 2 * margin
         )
+        
+        # 通知画布尺寸已更新
+        self.canvasSizeChanged.emit()
 
     def fit_page(self):
         if self.page_rect_item:

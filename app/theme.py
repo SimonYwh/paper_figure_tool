@@ -90,7 +90,7 @@ def build_app_stylesheet() -> str:
         padding: 0;
     }}
 
-    /* ---- 输入控件 ---- */
+    /* ---- 输入控件（增强选中可读性） ---- */
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background: {BG_PRIMARY};
         border: 1px solid {BORDER_LIGHT};
@@ -98,10 +98,13 @@ def build_app_stylesheet() -> str:
         padding: {INPUT_PADDING};
         min-height: {INPUT_HEIGHT};
         color: {TEXT_PRIMARY};
-        selection-background-color: {ACCENT_LIGHT_BG};
+        selection-background-color: {ACCENT};
+        selection-color: {TEXT_ON_ACCENT};
+        font-weight: 500;
     }}
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
         border-color: {BORDER_FOCUS};
+        background: {BG_PRIMARY};
     }}
     QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
         background: {BG_SECONDARY};

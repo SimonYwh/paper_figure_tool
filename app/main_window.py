@@ -194,7 +194,22 @@ class CanvasSettingsDialog(QDialog):
         self.btn_save_preset.clicked.connect(self._save_current_as_preset)
         self.btn_delete_preset.clicked.connect(self._delete_selected_preset)
 
-        self.unit_combo.setCurrentIndex(0)
+        # 根据当前画布设置初始化单位和数值（从当前尺寸和单位开始）
+        dpi = int(current.dpi)
+        width_px = current.width_px
+        height_px = current.height_px
+        
+        # 尝试匹配当前单位：如果当前尺寸是整数且接近像素值，则使用像素单位
+        if abs(width_px - round(width_px)) < 0.5 and abs(height_px - round(height_px)) < 0.5:
+            # 检查是否接近某个常用单位的整数值
+            mm_w = current.width_mm
+            mm_h = current.height_mm
+            # 优先使用毫米作为默认单位，但显示当前实际值
+            unit_idx = 0  # 默认毫米
+        else:
+            unit_idx = 0
+        
+        self.unit_combo.setCurrentIndex(unit_idx)
         self._apply_spin_ui_by_unit(self.current_unit())
         self._set_spins_from_mm()
         self.preset_combo.setCurrentText(self._guess_preset(self._width_mm, self._height_mm))
@@ -935,6 +950,7 @@ class MainWindow(QMainWindow):
         self.canvas_view.filesDropped.connect(self.import_images)
         self.canvas_view.scene().selectionChanged.connect(self._on_scene_selection_changed)
         self.canvas_view.sceneModified.connect(self._on_scene_modified)
+        self.canvas_view.canvasSizeChanged.connect(self._on_canvas_size_changed)
 
         self._refresh_window_title()
         self._refresh_properties_panel()
@@ -1830,6 +1846,10 @@ class MainWindow(QMainWindow):
         self._refresh_properties_panel()
         self._update_workflow_state()
 
+    def _on_canvas_size_changed(self):
+        """画布尺寸更新时立即刷新属性面板显示"""
+        self._refresh_properties_panel()
+
     def _on_asset_list_current_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None):
         if self._property_syncing:
             return
@@ -2312,7 +2332,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self.canvas_settings = dlg.get_settings()
-        self.canvas_view.set_canvas_size_px(self.canvas_settings.width_px, self.canvas_settings.height_px)
+        self._refresh_properties_panel()
         QTimer.singleShot(0, self.canvas_view.fit_page)
         self.statusBar().showMessage(
             f"画布已更新: {self.canvas_settings.width_mm}×{self.canvas_settings.height_mm} mm @ {self.canvas_settings.dpi} DPI",
