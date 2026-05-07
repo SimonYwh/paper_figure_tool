@@ -76,12 +76,34 @@ python main.py
 - 可设置导出 DPI（72~1200）
 - PNG/TIFF/PDF/SVG 支持透明背景模式
 - JPG 不支持透明背景
+- **颜色管理**：导入时自动应用 ICC 色彩管理，将内嵌 ICC profile 转换到 sRGB 色彩空间，确保显示和导出颜色一致
+- **导出嵌入**：PNG/TIFF/JPG 导出时自动嵌入 sRGB ICC profile，确保在其他软件中打开时颜色正确显示
+- **超大图兼容**：已启用强兼容策略（`Image.MAX_IMAGE_PIXELS=None`），并仅过滤 `DecompressionBombWarning`
+- **调色板透明度兼容**：对 `P/PA` 且 `transparency=bytes` 的图像先转 `RGBA`，避免 Pillow 透明度告警
+
+## 颜色管理说明
+
+本工具支持 ICC 色彩管理，确保图片在不同软件间显示颜色一致：
+
+1. **导入处理**：自动检测图片内嵌的 ICC profile，转换到 sRGB 色彩空间
+2. **灰度图处理**：保持原始灰度信息，正确处理 WhiteIsZero 标记
+3. **16bit 图像**：线性映射到 8bit 显示范围，保持原始数据的相对关系
+4. **调色板 PNG**：彩色调色板（P 模式）保持彩色渲染，仅灰度调色板走灰度路径
+5. **导出嵌入**：所有导出格式自动嵌入 sRGB ICC profile
+6. **调色板透明图处理**：`P/PA` 且 `transparency=bytes` 的输入在渲染前先统一转为 `RGBA`
+7. **超大图策略**：允许超大像素图加载，并仅抑制 Pillow 的 `DecompressionBombWarning`
+
+### 图像模式处理规则
+
+| 模式 | 处理方式 |
+|------|----------|
+| `RGB` / `RGBA` | 直接保留颜色，ICC 转换后输出 |
+| `P`（彩色调色板） | 检测调色板是否为灰度，彩色则转 RGB 保留颜色 |
+| `P`（灰度调色板） | 走灰度渲染路径，线性映射到 8bit |
+| `L` / `1` / `I` / `F` / `I;16` | 数值灰度模式，线性映射到 8bit 显示 |
+| `CMYK` | 转 RGB 后输出 |
 
 ## 说明
 
 - 项目保存为 `.figproj` 后，可再次打开继续编辑。
 - 若打开项目时提示图片缺失，请确认原始图片路径未变更或已恢复到原位置。
-
-## Buy Me a Coffee
-
-![2f3f3fc8f9e7eb0c86b197090c853e8a](https://github.com/user-attachments/assets/ebeb3f2a-7769-4ea9-ac2b-7f0e73ccc458)

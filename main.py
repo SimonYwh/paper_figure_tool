@@ -7,6 +7,7 @@ from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import QApplication
 
 from app.main_window import MainWindow
+from app.theme import build_app_stylesheet
 
 
 def _qt_message_handler(mode: QtMsgType, _context, message: str):
@@ -16,10 +17,12 @@ def _qt_message_handler(mode: QtMsgType, _context, message: str):
     if "libpng warning: iccp" in low or "chrm chunk does not match srgb" in low:
         return
 
-    # 2) DirectWrite + Terminal 字体警告（不影响结果）
+    # 2) DirectWrite + 字体相关警告（不影响结果）
     if "directwrite: createfontfacefromhdc() failed" in low:
         return
     if 'qfontdef(family="terminal"' in low:
+        return
+    if "qfont::setpointsize: point size <= 0" in low:
         return
 
     prefix = {
@@ -50,6 +53,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("论文组图排版器")
     app.setFont(QFont("Microsoft YaHei UI", 10))
+    app.setStyleSheet(build_app_stylesheet())
 
     w = MainWindow()
     w.show()
@@ -58,3 +62,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+    
