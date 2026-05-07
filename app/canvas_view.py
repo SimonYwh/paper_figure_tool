@@ -909,7 +909,8 @@ class CanvasView(QGraphicsView):
             | QPainter.RenderHint.SmoothPixmapTransform
             | QPainter.RenderHint.TextAntialiasing
         )
-        self.setBackgroundBrush(QColor("#666666"))
+        from app.theme import BG_CANVAS
+        self.setBackgroundBrush(QColor(BG_CANVAS))
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setAcceptDrops(True)
@@ -927,7 +928,7 @@ class CanvasView(QGraphicsView):
             self.scene().removeItem(self.page_rect_item)
 
         self.page_rect_item = QGraphicsRectItem(0, 0, self.page_width_px, self.page_height_px)
-        self.page_rect_item.setPen(QPen(QColor("#BEBEBE"), 1))
+        self.page_rect_item.setPen(QPen(QColor("#D0D3D8"), 1))
         self.page_rect_item.setBrush(QColor("white"))
         self.page_rect_item.setZValue(-1000)
         self.scene().addItem(self.page_rect_item)

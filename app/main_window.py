@@ -3,8 +3,17 @@ from __future__ import annotations
 import json
 import os
 
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QPixmap
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPointF,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -13,12 +22,15 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFontComboBox,
     QFormLayout,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsItem,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -28,13 +40,60 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
+    QSplitter,
+    QStackedWidget,
+    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 
 from app.canvas_view import CanvasView, ImageFrameItem, LabelItem, TextBoxItem
+from app.icons import make_icon
+from app.preset_manager import (
+    add_canvas_preset,
+    add_layout_preset,
+    add_numbering_preset,
+    delete_canvas_preset,
+    delete_layout_preset,
+    delete_numbering_preset,
+    load_canvas_presets,
+    load_layout_presets,
+    load_numbering_presets,
+)
+from app.theme import (
+    ACCENT,
+    ACTION_BUTTON_STYLE,
+    BG_APP,
+    BG_PRIMARY,
+    BORDER_SUBTLE,
+    BRAND_BADGE_STYLE,
+    BRAND_TITLE_STYLE,
+    CARD_ACTIVE_STYLE,
+    CARD_DEFAULT_STYLE,
+    DANGER_BUTTON_STYLE,
+    HINT_STYLE,
+    HISTORY_BUTTON_STYLE,
+    HISTORY_LIST_STYLE,
+    INFO_CARD_STYLE,
+    INFO_STYLE,
+    LABEL_STYLE,
+    PRIMARY_BUTTON_STYLE,
+    RIGHT_PANEL_STYLE,
+    SECTION_TITLE_STYLE,
+    STEP_BADGE_ACTIVE_STYLE,
+    STEP_BADGE_DEFAULT_STYLE,
+    STEP_DESC_STYLE,
+    STEP_TITLE_STYLE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_TERTIARY,
+    WORKFLOW_PANEL_STYLE,
+)
 from core.exporter import export_canvas_to_image, export_canvas_to_pdf, export_canvas_to_svg
 from core.history_manager import HistoryManager
 from core.image_loader import ImageLoader
@@ -60,14 +119,13 @@ def _localize_dialog_buttons(btn_box: QDialogButtonBox):
 
 
 class CanvasSettingsDialog(QDialog):
-    PRESETS = {
+    BUILTIN_PRESETS = {
         "A3 竖版 (297×420mm)": (297.0, 420.0),
         "A3 横版 (420×297mm)": (420.0, 297.0),
         "A4 竖版 (210×297mm)": (210.0, 297.0),
         "A4 横版 (297×210mm)": (297.0, 210.0),
         "A5 竖版 (148×210mm)": (148.0, 210.0),
         "A5 横版 (210×148mm)": (210.0, 148.0),
-        "自定义": None,
     }
 
     UNIT_OPTIONS = [
@@ -85,8 +143,11 @@ class CanvasSettingsDialog(QDialog):
         self._width_mm = float(current.width_mm)
         self._height_mm = float(current.height_mm)
 
+        # 加载用户预设
+        self._user_presets = load_canvas_presets()
+
         self.preset_combo = QComboBox()
-        self.preset_combo.addItems(self.PRESETS.keys())
+        self._refresh_preset_list()
 
         self.unit_combo = QComboBox()
         for label, code in self.UNIT_OPTIONS:
@@ -99,8 +160,19 @@ class CanvasSettingsDialog(QDialog):
         self.dpi_spin.setRange(72, 1200)
         self.dpi_spin.setValue(current.dpi)
 
+        # 预设管理按钮
+        self.btn_save_preset = QPushButton("保存为预设")
+        self.btn_save_preset.setFixedWidth(100)
+        self.btn_delete_preset = QPushButton("删除预设")
+        self.btn_delete_preset.setFixedWidth(100)
+
+        preset_btn_layout = QHBoxLayout()
+        preset_btn_layout.addWidget(self.preset_combo)
+        preset_btn_layout.addWidget(self.btn_save_preset)
+        preset_btn_layout.addWidget(self.btn_delete_preset)
+
         layout = QFormLayout(self)
-        layout.addRow("页面预设", self.preset_combo)
+        layout.addRow("页面预设", preset_btn_layout)
         layout.addRow("单位", self.unit_combo)
         layout.addRow("宽度", self.w_spin)
         layout.addRow("高度", self.h_spin)
@@ -119,11 +191,59 @@ class CanvasSettingsDialog(QDialog):
         self.dpi_spin.valueChanged.connect(self._on_dpi_changed)
         self.w_spin.valueChanged.connect(self._on_size_spin_changed)
         self.h_spin.valueChanged.connect(self._on_size_spin_changed)
+        self.btn_save_preset.clicked.connect(self._save_current_as_preset)
+        self.btn_delete_preset.clicked.connect(self._delete_selected_preset)
 
         self.unit_combo.setCurrentIndex(0)
         self._apply_spin_ui_by_unit(self.current_unit())
         self._set_spins_from_mm()
         self.preset_combo.setCurrentText(self._guess_preset(self._width_mm, self._height_mm))
+
+    def _refresh_preset_list(self):
+        """刷新预设下拉列表，包含内置和用户预设"""
+        self._updating = True
+        try:
+            current_text = self.preset_combo.currentText() if self.preset_combo.count() > 0 else ""
+            self.preset_combo.clear()
+            # 内置预设
+            for name in self.BUILTIN_PRESETS:
+                self.preset_combo.addItem(name)
+            # 用户预设
+            for p in self._user_presets:
+                self.preset_combo.addItem(p["name"])
+            # 自定义选项
+            self.preset_combo.addItem("自定义")
+            # 恢复选中
+            idx = self.preset_combo.findText(current_text)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+        finally:
+            self._updating = False
+
+    def _save_current_as_preset(self):
+        """将当前尺寸保存为用户预设"""
+        name, ok = QInputDialog.getText(self, "保存预设", "预设名称：", QLineEdit.EchoMode.Normal, "")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        add_canvas_preset(name, self._width_mm, self._height_mm, int(self.dpi_spin.value()))
+        self._user_presets = load_canvas_presets()
+        self._refresh_preset_list()
+        self.preset_combo.setCurrentText(name)
+
+    def _delete_selected_preset(self):
+        """删除选中的用户预设"""
+        name = self.preset_combo.currentText()
+        if name in self.BUILTIN_PRESETS or name == "自定义":
+            QMessageBox.information(self, "提示", "内置预设不可删除。")
+            return
+        # 检查是否为用户预设
+        is_user = any(p["name"] == name for p in self._user_presets)
+        if not is_user:
+            return
+        delete_canvas_preset(name)
+        self._user_presets = load_canvas_presets()
+        self._refresh_preset_list()
 
     @staticmethod
     def _to_mm(v: float, unit: str, dpi: int) -> float:
@@ -197,12 +317,16 @@ class CanvasSettingsDialog(QDialog):
             self._updating = False
 
     def _guess_preset(self, w: float, h: float) -> str:
-        for name, val in self.PRESETS.items():
-            if val is None:
-                continue
+        # 检查内置预设
+        for name, val in self.BUILTIN_PRESETS.items():
             pw, ph = val
             if abs(w - pw) < 0.5 and abs(h - ph) < 0.5:
                 return name
+        # 检查用户预设
+        for p in self._user_presets:
+            pw, ph = float(p.get("width_mm", 0)), float(p.get("height_mm", 0))
+            if abs(w - pw) < 0.5 and abs(h - ph) < 0.5:
+                return p["name"]
         return "自定义"
 
     def _sync_preset(self):
@@ -217,11 +341,20 @@ class CanvasSettingsDialog(QDialog):
     def _on_preset_changed(self, text: str):
         if self._updating:
             return
-        val = self.PRESETS.get(text)
-        if val is None:
+        # 内置预设
+        val = self.BUILTIN_PRESETS.get(text)
+        if val is not None:
+            self._width_mm, self._height_mm = float(val[0]), float(val[1])
+            self._set_spins_from_mm()
             return
-        self._width_mm, self._height_mm = float(val[0]), float(val[1])
-        self._set_spins_from_mm()
+        # 用户预设
+        for p in self._user_presets:
+            if p.get("name") == text:
+                self._width_mm = float(p.get("width_mm", 210.0))
+                self._height_mm = float(p.get("height_mm", 297.0))
+                self.dpi_spin.setValue(int(p.get("dpi", 300)))
+                self._set_spins_from_mm()
+                return
 
     def _on_unit_changed(self, _idx: int):
         unit = self.current_unit()
@@ -265,6 +398,13 @@ class NumberingDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("一键编号设置")
 
+        # 加载用户预设
+        self._user_presets = load_numbering_presets()
+
+        # 预设选择
+        self.preset_combo = QComboBox()
+        self._refresh_preset_list()
+
         self.style_combo = QComboBox()
         self.style_combo.addItems(self.STYLE_OPTIONS)
 
@@ -289,7 +429,19 @@ class NumberingDialog(QDialog):
         self.black_bg = QCheckBox("黑底白字")
         self.black_bg.setChecked(False)
 
+        # 预设管理按钮
+        self.btn_save_preset = QPushButton("保存为预设")
+        self.btn_save_preset.setFixedWidth(100)
+        self.btn_delete_preset = QPushButton("删除预设")
+        self.btn_delete_preset.setFixedWidth(100)
+
+        preset_btn_layout = QHBoxLayout()
+        preset_btn_layout.addWidget(self.preset_combo)
+        preset_btn_layout.addWidget(self.btn_save_preset)
+        preset_btn_layout.addWidget(self.btn_delete_preset)
+
         layout = QFormLayout(self)
+        layout.addRow("预设", preset_btn_layout)
         layout.addRow("样式", self.style_combo)
         layout.addRow("字体", self.font_combo)
         layout.addRow("字号", self.size_spin)
@@ -313,6 +465,9 @@ class NumberingDialog(QDialog):
         self.offset_x.valueChanged.connect(self._emit_preview)
         self.offset_y.valueChanged.connect(self._emit_preview)
         self.black_bg.toggled.connect(self._emit_preview)
+        self.btn_save_preset.clicked.connect(self._save_current_as_preset)
+        self.btn_delete_preset.clicked.connect(self._delete_selected_preset)
+        self.preset_combo.currentTextChanged.connect(self._on_preset_selected)
 
         if current_cfg:
             if current_cfg.get("style") in self.STYLE_OPTIONS:
@@ -329,6 +484,63 @@ class NumberingDialog(QDialog):
 
         QTimer.singleShot(0, self._emit_preview)
 
+    def _refresh_preset_list(self):
+        """刷新预设下拉列表"""
+        self._preset_updating = True
+        try:
+            current_text = self.preset_combo.currentText() if self.preset_combo.count() > 0 else ""
+            self.preset_combo.clear()
+            self.preset_combo.addItem("（无预设）")
+            for p in self._user_presets:
+                self.preset_combo.addItem(p["name"])
+            idx = self.preset_combo.findText(current_text)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+        finally:
+            self._preset_updating = False
+
+    def _on_preset_selected(self, text: str):
+        """应用选中的预设"""
+        if getattr(self, "_preset_updating", False):
+            return
+        for p in self._user_presets:
+            if p.get("name") == text:
+                if p.get("style") in self.STYLE_OPTIONS:
+                    self.style_combo.setCurrentText(p["style"])
+                if p.get("corner") in self.CORNER_OPTIONS:
+                    self.corner_combo.setCurrentText(p["corner"])
+                self.size_spin.setValue(int(p.get("font_size", 20)))
+                self.offset_x.setValue(int(p.get("offset_x", 8)))
+                self.offset_y.setValue(int(p.get("offset_y", 8)))
+                self.black_bg.setChecked(bool(p.get("black_bg", False)))
+                fam = p.get("font_family")
+                if fam:
+                    self.font_combo.setCurrentFont(QFont(fam))
+                return
+
+    def _save_current_as_preset(self):
+        """将当前设置保存为用户预设"""
+        name, ok = QInputDialog.getText(self, "保存预设", "预设名称：", QLineEdit.EchoMode.Normal, "")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        add_numbering_preset(name, self.get_data())
+        self._user_presets = load_numbering_presets()
+        self._refresh_preset_list()
+        self.preset_combo.setCurrentText(name)
+
+    def _delete_selected_preset(self):
+        """删除选中的用户预设"""
+        name = self.preset_combo.currentText()
+        if name == "（无预设）":
+            return
+        is_user = any(p["name"] == name for p in self._user_presets)
+        if not is_user:
+            return
+        delete_numbering_preset(name)
+        self._user_presets = load_numbering_presets()
+        self._refresh_preset_list()
+
     def _emit_preview(self, *_):
         self.previewChanged.emit(self.get_data())
 
@@ -342,6 +554,107 @@ class NumberingDialog(QDialog):
             "offset_y": int(self.offset_y.value()),
             "black_bg": bool(self.black_bg.isChecked()),
         }
+
+
+class CustomLayoutDialog(QDialog):
+    """一步式自定义排版对话框：同时输入行数和列数，支持保存/加载预设"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("自定义排版")
+
+        # 加载用户预设
+        self._user_presets = load_layout_presets()
+
+        # 预设选择
+        self.preset_combo = QComboBox()
+        self._refresh_preset_list()
+
+        self.rows_spin = QSpinBox()
+        self.rows_spin.setRange(1, 30)
+        self.rows_spin.setValue(2)
+
+        self.cols_spin = QSpinBox()
+        self.cols_spin.setRange(1, 30)
+        self.cols_spin.setValue(2)
+
+        # 预设管理按钮
+        self.btn_save_preset = QPushButton("保存为预设")
+        self.btn_save_preset.setFixedWidth(100)
+        self.btn_delete_preset = QPushButton("删除预设")
+        self.btn_delete_preset.setFixedWidth(100)
+
+        preset_btn_layout = QHBoxLayout()
+        preset_btn_layout.addWidget(self.preset_combo)
+        preset_btn_layout.addWidget(self.btn_save_preset)
+        preset_btn_layout.addWidget(self.btn_delete_preset)
+
+        layout = QFormLayout(self)
+        layout.addRow("预设", preset_btn_layout)
+        layout.addRow("行数", self.rows_spin)
+        layout.addRow("列数", self.cols_spin)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _localize_dialog_buttons(btn_box)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addRow(btn_box)
+
+        self.btn_save_preset.clicked.connect(self._save_current_as_preset)
+        self.btn_delete_preset.clicked.connect(self._delete_selected_preset)
+        self.preset_combo.currentTextChanged.connect(self._on_preset_selected)
+
+    def _refresh_preset_list(self):
+        self._preset_updating = True
+        try:
+            current_text = self.preset_combo.currentText() if self.preset_combo.count() > 0 else ""
+            self.preset_combo.clear()
+            self.preset_combo.addItem("（无预设）")
+            for p in self._user_presets:
+                self.preset_combo.addItem(p["name"])
+            idx = self.preset_combo.findText(current_text)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+        finally:
+            self._preset_updating = False
+
+    def _on_preset_selected(self, text: str):
+        if getattr(self, "_preset_updating", False):
+            return
+        for p in self._user_presets:
+            if p.get("name") == text:
+                self.rows_spin.setValue(int(p.get("rows", 2)))
+                self.cols_spin.setValue(int(p.get("cols", 2)))
+                return
+
+    def _save_current_as_preset(self):
+        name, ok = QInputDialog.getText(self, "保存预设", "预设名称：", QLineEdit.EchoMode.Normal, "")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        add_layout_preset(name, self.rows_spin.value(), self.cols_spin.value())
+        self._user_presets = load_layout_presets()
+        self._refresh_preset_list()
+        self.preset_combo.setCurrentText(name)
+
+    def _delete_selected_preset(self):
+        name = self.preset_combo.currentText()
+        if name == "（无预设）":
+            return
+        is_user = any(p["name"] == name for p in self._user_presets)
+        if not is_user:
+            return
+        delete_layout_preset(name)
+        self._user_presets = load_layout_presets()
+        self._refresh_preset_list()
+
+    def get_rows(self) -> int:
+        return self.rows_spin.value()
+
+    def get_cols(self) -> int:
+        return self.cols_spin.value()
 
 
 class LabelStyleDialog(QDialog):
@@ -507,6 +820,55 @@ class TextBoxStyleDialog(QDialog):
         }
 
 
+class HoverCard(QFrame):
+    """带柔和阴影 + hover 动效的步骤卡片。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("step_card")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(10.0)
+        self._shadow.setOffset(0, 1)
+        self._shadow.setColor(QColor(15, 23, 42, 18))  # rgba(...,0.07)
+        self.setGraphicsEffect(self._shadow)
+
+        self._anim = QPropertyAnimation(self._shadow, b"blurRadius", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._offset_anim = QPropertyAnimation(self._shadow, b"yOffset", self)
+        self._offset_anim.setDuration(180)
+        self._offset_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def _animate_to(self, blur: float, offset: float, alpha: int):
+        self._anim.stop()
+        self._anim.setStartValue(self._shadow.blurRadius())
+        self._anim.setEndValue(blur)
+        self._anim.start()
+        self._offset_anim.stop()
+        self._offset_anim.setStartValue(self._shadow.yOffset())
+        self._offset_anim.setEndValue(offset)
+        self._offset_anim.start()
+        col = self._shadow.color()
+        col.setAlpha(alpha)
+        self._shadow.setColor(col)
+
+    def enterEvent(self, event):
+        self._animate_to(22.0, 6.0, 36)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._animate_to(10.0, 1.0, 18)
+        super().leaveEvent(event)
+
+
+class TextOnlyAction(QAction):
+    """无图标版本（用于无需图标的内部动作）。"""
+    pass
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -547,27 +909,36 @@ class MainWindow(QMainWindow):
         self._history_timer.setInterval(280)
         self._history_timer.timeout.connect(self._commit_history_snapshot)
 
-        self.setWindowTitle("论文组图排版器 (v0.6.1)")
-        self.resize(1480, 940)
+        self.setWindowTitle("论文组图排版器 (v1.1.1)")
+        self.resize(1320, 820)
+        self.setMinimumSize(1180, 720)
 
+        # ---- 创建画布 ----
         self.canvas_view = CanvasView(self)
-        self.setCentralWidget(self.canvas_view)
         self.canvas_view.set_canvas_size_px(self.canvas_settings.width_px, self.canvas_settings.height_px)
         self.canvas_view.sceneModified.connect(self._schedule_history_commit)
 
+        # ---- 创建加载器 ----
         self.loader = ImageLoader(max_thumb=2200, parent=self)
         self._bind_loader_signals()
 
+        # ---- 创建动作 ----
         self._create_actions()
-        self._create_menu_and_toolbar()
-        self._create_properties_dock()
 
+        # 不使用顶部菜单栏
+        self.menuBar().hide()
+
+        # ---- 构建三栏布局骨架 ----
+        self._build_three_panel_layout()
+
+        # ---- 连接信号 ----
         self.canvas_view.filesDropped.connect(self.import_images)
         self.canvas_view.scene().selectionChanged.connect(self._on_scene_selection_changed)
         self.canvas_view.sceneModified.connect(self._on_scene_modified)
 
         self._refresh_window_title()
         self._refresh_properties_panel()
+        self._refresh_history_panel()
 
         self.statusBar().showMessage("就绪")
         QTimer.singleShot(0, self._init_after_show)
@@ -652,6 +1023,7 @@ class MainWindow(QMainWindow):
             return
         self._history.push(self._state_json())
         self._update_undo_redo_enabled()
+        self._refresh_history_panel()
 
     def _update_undo_redo_enabled(self):
         self.act_undo.setEnabled(self._history.can_undo())
@@ -664,6 +1036,7 @@ class MainWindow(QMainWindow):
             return
         self._load_state_json(state)
         self._update_undo_redo_enabled()
+        self._refresh_history_panel()
         self.statusBar().showMessage("已撤销。", 1000)
 
     def redo(self):
@@ -673,12 +1046,13 @@ class MainWindow(QMainWindow):
             return
         self._load_state_json(state)
         self._update_undo_redo_enabled()
+        self._refresh_history_panel()
         self.statusBar().showMessage("已重做。", 1000)
 
     # ----------------- 项目 -----------------
     def _refresh_window_title(self):
         name = os.path.basename(self.current_project_path) if self.current_project_path else "未命名.figproj"
-        self.setWindowTitle(f"论文组图排版器 (v0.6.1) - {name}")
+        self.setWindowTitle(f"论文组图排版器 (v1.1.1) - {name}")
 
     def _has_unsaved_changes(self) -> bool:
         try:
@@ -868,6 +1242,9 @@ class MainWindow(QMainWindow):
         self.act_layout_2x2 = QAction("2×2 排版", self)
         self.act_layout_2x2.triggered.connect(lambda: self.apply_layout(2, 2))
 
+        self.act_layout_2x3 = QAction("2×3 排版", self)
+        self.act_layout_2x3.triggered.connect(lambda: self.apply_layout(2, 3))
+
         self.act_layout_3x2 = QAction("3×2 排版", self)
         self.act_layout_3x2.triggered.connect(lambda: self.apply_layout(3, 2))
 
@@ -954,113 +1331,282 @@ class MainWindow(QMainWindow):
         self.act_clear = QAction("清空", self)
         self.act_clear.triggered.connect(self.clear_all)
 
-    def _create_menu_and_toolbar(self):
-        m_file = self.menuBar().addMenu("文件")
-        m_file.addAction(self.act_new_project)
-        m_file.addAction(self.act_open_project)
-        m_file.addAction(self.act_save_project)
-        m_file.addAction(self.act_save_project_as)
-        m_file.addSeparator()
-        m_file.addAction(self.act_import)
-        m_file.addAction(self.act_canvas)
-        m_file.addSeparator()
-        m_file.addAction(self.act_export)
+        # 为顶部工具栏与流程按钮统一附加图标
+        self._attach_action_icons()
 
-        m_layout = self.menuBar().addMenu("排版")
-        m_layout.addAction(self.act_layout_2x2)
-        m_layout.addAction(self.act_layout_3x2)
-        m_layout.addAction(self.act_layout_2x4)
-        m_layout.addAction(self.act_layout_4x2)
-        m_layout.addAction(self.act_layout_custom)
+    def _attach_action_icons(self):
+        """统一为各 QAction 绑定矢量图标，保证视觉一致。"""
+        mapping = {
+            self.act_new_project: "new",
+            self.act_open_project: "open",
+            self.act_save_project: "save",
+            self.act_save_project_as: "save",
+            self.act_undo: "undo",
+            self.act_redo: "redo",
+            self.act_fit: "fit",
+            self.act_export: "export",
+            self.act_import: "import",
+            self.act_canvas: "canvas",
+            self.act_layout_2x2: "grid_2x2",
+            self.act_layout_2x3: "grid_2x3",
+            self.act_layout_3x2: "grid_3x2",
+            self.act_layout_2x4: "grid_2x4",
+            self.act_layout_4x2: "grid_4x2",
+            self.act_layout_custom: "grid_custom",
+            self.act_auto_label: "label",
+            self.act_edit_label: "label",
+            self.act_add_textbox: "textbox",
+            self.act_textbox_font: "textbox",
+            self.act_textbox_style: "textbox",
+            self.act_align_left: "align_left",
+            self.act_align_right: "align_right",
+            self.act_align_hc: "align_hcenter",
+            self.act_align_top: "align_top",
+            self.act_align_bottom: "align_bottom",
+            self.act_align_vc: "align_vcenter",
+            self.act_clear: "trash",
+            self.act_snap: "snap",
+            self.act_delete: "trash",
+        }
+        for act, name in mapping.items():
+            try:
+                act.setIcon(make_icon(name, color=TEXT_SECONDARY, size=20))
+            except Exception:
+                pass
 
-        m_image = self.menuBar().addMenu("图片")
-        m_image.addAction(self.act_img_rot_l)
-        m_image.addAction(self.act_img_rot_r)
-        m_image.addSeparator()
-        m_image.addAction(self.act_img_flip_h)
-        m_image.addAction(self.act_img_flip_v)
-        m_image.addSeparator()
-        m_image.addAction(self.act_img_reset)
-        m_image.addAction(self.act_img_border)
+    # ================================================================
+    # 三栏布局构建
+    # ================================================================
 
-        m_align = self.menuBar().addMenu("对齐")
-        m_align.addAction(self.act_align_left)
-        m_align.addAction(self.act_align_hc)
-        m_align.addAction(self.act_align_right)
-        m_align.addSeparator()
-        m_align.addAction(self.act_align_top)
-        m_align.addAction(self.act_align_vc)
-        m_align.addAction(self.act_align_bottom)
-        m_align.addSeparator()
-        m_align.addAction(self.act_dist_h)
-        m_align.addAction(self.act_dist_v)
+    def _build_three_panel_layout(self):
+        """构建三栏布局骨架：顶部命令栏 + 左流程导航 + 中画布 + 右属性历史"""
+        root = QWidget()
+        self.setCentralWidget(root)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        m_anno = self.menuBar().addMenu("标注")
-        m_anno.addAction(self.act_auto_label)
-        m_anno.addAction(self.act_edit_label)
-        m_anno.addSeparator()
-        m_anno.addAction(self.act_add_textbox)
-        m_anno.addAction(self.act_textbox_font)
-        m_anno.addAction(self.act_textbox_font_size)
-        m_anno.addAction(self.act_textbox_style)
+        root.setStyleSheet(f"background-color: {BG_APP};")
 
-        m_view = self.menuBar().addMenu("视图")
-        m_view.addAction(self.act_snap)
-        m_view.addAction(self.act_fit)
+        # 顶部简洁命令栏
+        self._create_top_toolbar()
 
-        m_edit = self.menuBar().addMenu("编辑")
-        m_edit.addAction(self.act_undo)
-        m_edit.addAction(self.act_redo)
-        m_edit.addSeparator()
-        m_edit.addAction(self.act_select_all)
-        m_edit.addAction(self.act_delete)
-        m_edit.addSeparator()
-        m_edit.addAction(self.act_copy)
-        m_edit.addAction(self.act_cut)
-        m_edit.addAction(self.act_paste)
-        m_edit.addSeparator()
-        m_edit.addAction(self.act_clear)
+        # 主内容区：三栏分割
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.setHandleWidth(1)
 
-        tb = self.addToolBar("主工具栏")
-        tb.setMovable(False)
-        tb.addAction(self.act_new_project)
-        tb.addAction(self.act_open_project)
-        tb.addAction(self.act_save_project)
-        tb.addSeparator()
-        tb.addAction(self.act_undo)
-        tb.addAction(self.act_redo)
-        tb.addSeparator()
-        tb.addAction(self.act_import)
-        tb.addAction(self.act_layout_2x2)
-        tb.addAction(self.act_layout_3x2)
-        tb.addAction(self.act_layout_2x4)
-        tb.addAction(self.act_layout_4x2)
-        tb.addSeparator()
-        tb.addAction(self.act_img_rot_l)
-        tb.addAction(self.act_img_rot_r)
-        tb.addSeparator()
-        tb.addAction(self.act_auto_label)
-        tb.addAction(self.act_add_textbox)
-        tb.addAction(self.act_textbox_style)
-        tb.addSeparator()
-        tb.addAction(self.act_export)
+        # 左侧流程导航
+        left_scroll = self._create_left_workflow_panel()
+        self._main_splitter.addWidget(left_scroll)
+
+        # 中央画布
+        self._main_splitter.addWidget(self.canvas_view)
+
+        # 右侧属性与历史
+        right_panel = self._create_right_panel()
+        self._main_splitter.addWidget(right_panel)
+
+        # 紧凑分割比例：左 280 : 中弹性 : 右 280
+        self._main_splitter.setSizes([280, 760, 280])
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
+        self._main_splitter.setStretchFactor(2, 0)
+
+        root_layout.addWidget(self._main_splitter)
 
         self._update_undo_redo_enabled()
 
-    def _create_properties_dock(self):
-        dock = QDockWidget("属性", self)
-        dock.setObjectName("properties_dock")
-        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+    def _create_top_toolbar(self):
+        """顶部主命令栏：品牌区 + 项目操作 + 历史 + 视图 + 导出"""
+        tb = self.addToolBar("主命令栏")
+        tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
-        panel = QWidget(dock)
+        # 品牌区
+        brand = QWidget()
+        brand_layout = QHBoxLayout(brand)
+        brand_layout.setContentsMargins(4, 0, 12, 0)
+        brand_layout.setSpacing(8)
+        # 品牌方块
+        logo = QLabel("◧")
+        logo.setStyleSheet(
+            f"font-size: 18px; color: {ACCENT}; padding: 0 2px; font-weight: 700;"
+        )
+        title = QLabel("Paper Figure")
+        title.setStyleSheet(BRAND_TITLE_STYLE)
+        ver = QLabel("v1.1")
+        ver.setStyleSheet(BRAND_BADGE_STYLE)
+        brand_layout.addWidget(logo)
+        brand_layout.addWidget(title)
+        brand_layout.addWidget(ver)
+        tb.addWidget(brand)
+        tb.addSeparator()
+
+        # 项目操作（精简：只保留高频）
+        for act in (self.act_new_project, self.act_open_project, self.act_save_project):
+            tb.addAction(act)
+        tb.addSeparator()
+        # 历史
+        tb.addAction(self.act_undo)
+        tb.addAction(self.act_redo)
+        tb.addSeparator()
+        # 视图
+        tb.addAction(self.act_fit)
+
+        # 弹簧把"导出"推到右侧
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        spacer.setStyleSheet("background: transparent;")
+        tb.addWidget(spacer)
+
+        # 主按钮：导出（强调色），用 QToolButton 配 PRIMARY 样式
+        export_btn = QToolButton()
+        export_btn.setDefaultAction(self.act_export)
+        export_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        export_btn.setIcon(make_icon("export", color="#FFFFFF", size=20))
+        export_btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {ACCENT};
+                color: #FFFFFF;
+                border: 1px solid {ACCENT};
+                border-radius: 6px;
+                padding: 4px 14px;
+                min-height: 26px;
+                font-weight: 600;
+            }}
+            QToolButton:hover {{ background: #3A6BD4; border-color: #3A6BD4; }}
+            QToolButton:pressed {{ background: #2D5ABE; border-color: #2D5ABE; }}
+            """
+        )
+        tb.addWidget(export_btn)
+
+    def _create_left_workflow_panel(self):
+        """创建左侧流程导航面板：步骤化入口，返回 QScrollArea"""
+        panel = QWidget()
+        panel.setObjectName("workflow_panel")
+        panel.setStyleSheet(WORKFLOW_PANEL_STYLE)
+
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(20, 24, 20, 24)
+        layout.setSpacing(20)
+
+        # 标题
+        title = QLabel("工作流程")
+        title.setStyleSheet(SECTION_TITLE_STYLE)
+        layout.addWidget(title)
+
+        # 步骤卡片
+        self._workflow_cards: dict[str, QFrame] = {}
+        steps = [
+            ("step1", "① 导入素材", [
+                ("导入图片", self.act_import),
+                ("画布设置", self.act_canvas),
+            ]),
+            ("step2", "② 选择排版", [
+                ("2×2", self.act_layout_2x2),
+                ("2×3", self.act_layout_2x3),
+                ("3×2", self.act_layout_3x2),
+                ("2×4", self.act_layout_2x4),
+                ("4×2", self.act_layout_4x2),
+                ("自定义", self.act_layout_custom),
+            ]),
+            ("step3", "③ 添加标注", [
+                ("一键编号", self.act_auto_label),
+                ("编辑编号", self.act_edit_label),
+                ("添加文本框", self.act_add_textbox),
+            ]),
+            ("step4", "④ 精调与导出", [
+                ("左对齐", self.act_align_left),
+                ("水平居中", self.act_align_hc),
+                ("右对齐", self.act_align_right),
+                ("顶对齐", self.act_align_top),
+                ("垂直居中", self.act_align_vc),
+                ("底对齐", self.act_align_bottom),
+                ("导出...", self.act_export),
+            ]),
+        ]
+
+        for step_id, title_text, actions in steps:
+            card = QFrame()
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setStyleSheet(CARD_DEFAULT_STYLE)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(16, 16, 16, 16)
+            card_layout.setSpacing(10)
+
+            step_title = QLabel(title_text)
+            step_title.setStyleSheet(STEP_TITLE_STYLE)
+            card_layout.addWidget(step_title)
+
+            btn_layout = QGridLayout()
+            btn_layout.setSpacing(8)
+            for i, (btn_text, action) in enumerate(actions):
+                btn = QPushButton(btn_text)
+                btn.setDefault(False)
+                btn.setAutoDefault(False)
+                btn.setStyleSheet(ACTION_BUTTON_STYLE)
+                btn.setIcon(action.icon())
+                btn.setIconSize(QSize(16, 16))
+                btn.clicked.connect(action.trigger)
+                btn_layout.addWidget(btn, i // 2, i % 2)
+            card_layout.addLayout(btn_layout)
+
+            layout.addWidget(card)
+            self._workflow_cards[step_id] = card
+
+        layout.addStretch()
+
+        # 网格吸附开关
+        snap_cb = QCheckBox("网格吸附")
+        snap_cb.setChecked(True)
+        snap_cb.toggled.connect(self.toggle_snap)
+        layout.addWidget(snap_cb)
+
+        # 清空按钮
+        clear_btn = QPushButton("清空画布")
+        clear_btn.setStyleSheet(DANGER_BUTTON_STYLE)
+        clear_btn.clicked.connect(self.clear_all)
+        layout.addWidget(clear_btn)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(panel)
+        return scroll
+
+    def _create_right_panel(self):
+        """创建右侧属性与历史面板，返回 QWidget"""
+        panel = QWidget()
+        panel.setObjectName("right_panel")
+        panel.setStyleSheet(RIGHT_PANEL_STYLE)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # ---- 上半区：属性卡片 ----
+        prop_card = QFrame()
+        prop_card.setFrameShape(QFrame.Shape.StyledPanel)
+        prop_card.setStyleSheet(CARD_DEFAULT_STYLE)
+        prop_card.setObjectName("step_card")
+        prop_layout = QVBoxLayout(prop_card)
+        prop_layout.setContentsMargins(16, 16, 16, 16)
+        prop_layout.setSpacing(10)
+
+        prop_title = QLabel("属性")
+        prop_title.setStyleSheet(SECTION_TITLE_STYLE)
+        prop_layout.addWidget(prop_title)
 
         self.prop_canvas_info = QLabel("-")
         self.prop_canvas_info.setWordWrap(True)
+        self.prop_canvas_info.setStyleSheet(INFO_STYLE)
 
         self.prop_selection_info = QLabel("-")
         self.prop_selection_info.setWordWrap(True)
+        self.prop_selection_info.setStyleSheet(INFO_STYLE)
 
         self.prop_asset_list = QListWidget()
         self.prop_asset_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1069,23 +1615,157 @@ class MainWindow(QMainWindow):
         self.prop_asset_name.setPlaceholderText("素材显示名称")
         self.prop_asset_name.setEnabled(False)
 
-        layout.addWidget(QLabel("画布信息"))
-        layout.addWidget(self.prop_canvas_info)
-        layout.addSpacing(6)
-        layout.addWidget(QLabel("当前选择"))
-        layout.addWidget(self.prop_selection_info)
-        layout.addSpacing(6)
-        layout.addWidget(QLabel("素材列表"))
-        layout.addWidget(self.prop_asset_list, 1)
-        layout.addWidget(QLabel("素材重命名"))
-        layout.addWidget(self.prop_asset_name)
+        lbl1 = QLabel("画布信息")
+        lbl1.setStyleSheet(LABEL_STYLE)
+        lbl2 = QLabel("当前选择")
+        lbl2.setStyleSheet(LABEL_STYLE)
+        lbl3 = QLabel("素材列表")
+        lbl3.setStyleSheet(LABEL_STYLE)
+        lbl4 = QLabel("素材重命名")
+        lbl4.setStyleSheet(LABEL_STYLE)
 
-        dock.setWidget(panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        self.properties_dock = dock
+        prop_layout.addWidget(lbl1)
+        prop_layout.addWidget(self.prop_canvas_info)
+        prop_layout.addSpacing(10)
+        prop_layout.addWidget(lbl2)
+        prop_layout.addWidget(self.prop_selection_info)
+        prop_layout.addSpacing(10)
+        prop_layout.addWidget(lbl3)
+        prop_layout.addWidget(self.prop_asset_list, 1)
+        prop_layout.addSpacing(10)
+        prop_layout.addWidget(lbl4)
+        prop_layout.addWidget(self.prop_asset_name)
 
+        layout.addWidget(prop_card, 1)
+
+        # ---- 下半区：历史卡片 ----
+        history_card = self._create_history_panel()
+        layout.addWidget(history_card, 1)
+
+        # 连接信号
         self.prop_asset_list.currentItemChanged.connect(self._on_asset_list_current_changed)
         self.prop_asset_name.editingFinished.connect(self._on_asset_name_edited)
+
+        return panel
+
+    def _create_history_panel(self):
+        """创建历史时间线面板，返回 QFrame（卡片样式）"""
+        card = QFrame()
+        card.setFrameShape(QFrame.Shape.StyledPanel)
+        card.setStyleSheet(CARD_DEFAULT_STYLE)
+        card.setObjectName("step_card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        history_title = QLabel("历史")
+        history_title.setStyleSheet(SECTION_TITLE_STYLE)
+        layout.addWidget(history_title)
+
+        self.history_list = QListWidget()
+        self.history_list.setStyleSheet(HISTORY_LIST_STYLE)
+        self.history_list.itemClicked.connect(self._on_history_item_clicked)
+        layout.addWidget(self.history_list)
+
+        # 历史操作按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+        self.btn_undo_hist = QPushButton("← 撤销")
+        self.btn_undo_hist.setStyleSheet(HISTORY_BUTTON_STYLE)
+        self.btn_undo_hist.clicked.connect(self.undo)
+        self.btn_redo_hist = QPushButton("重做 →")
+        self.btn_redo_hist.setStyleSheet(HISTORY_BUTTON_STYLE)
+        self.btn_redo_hist.clicked.connect(self.redo)
+        btn_layout.addWidget(self.btn_undo_hist)
+        btn_layout.addWidget(self.btn_redo_hist)
+        layout.addLayout(btn_layout)
+
+        return card
+
+    def _refresh_history_panel(self):
+        """刷新历史时间线面板"""
+        if not hasattr(self, "history_list"):
+            return
+        self.history_list.clear()
+        snapshots = self._history.snapshot_list()
+        for snap in snapshots:
+            idx = snap["index"]
+            is_current = snap["is_current"]
+            prefix = "▸ " if is_current else "    "
+            label = f"{prefix}初始状态" if idx == 0 else f"{prefix}步骤 {idx}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
+            if is_current:
+                item.setSelected(True)
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+            self.history_list.addItem(item)
+        # 滚动到当前项
+        current_items = self.history_list.findItems("▸ ", Qt.MatchFlag.MatchStartsWith)
+        if current_items:
+            self.history_list.scrollToItem(current_items[0])
+
+    def _on_history_item_clicked(self, item: QListWidgetItem):
+        """点击历史项跳转到该状态"""
+        target_idx = item.data(Qt.ItemDataRole.UserRole)
+        if target_idx is None:
+            return
+        current_idx = self._history.current_index()
+        if target_idx == current_idx:
+            return
+        # 通过多次 undo/redo 跳转到目标位置
+        self._history_timer.stop()
+        self._history_block = True
+        try:
+            if target_idx < current_idx:
+                for _ in range(current_idx - target_idx):
+                    state = self._history.undo()
+                    if state is None:
+                        break
+                    self._load_state_json(state)
+            else:
+                for _ in range(target_idx - current_idx):
+                    state = self._history.redo()
+                    if state is None:
+                        break
+                    self._load_state_json(state)
+        finally:
+            self._history_block = False
+        self._update_undo_redo_enabled()
+        self._refresh_history_panel()
+        self._refresh_properties_panel()
+
+    def _update_workflow_state(self):
+        """根据当前画布状态更新工作流步骤卡片的视觉状态"""
+        if not hasattr(self, "_workflow_cards"):
+            return
+
+        imgs = self.canvas_view.image_items()
+        has_images = len(imgs) > 0
+        has_content = has_images or any(
+            isinstance(it, (LabelItem, TextBoxItem))
+            for it in self.canvas_view.scene().items()
+        )
+
+        # 步骤1：导入素材 - 始终可用
+        self._set_card_state("step1", "active")
+        # 步骤2：选择排版 - 需要图片
+        self._set_card_state("step2", "active" if has_images else "default")
+        # 步骤3：添加标注 - 需要图片
+        self._set_card_state("step3", "active" if has_images else "default")
+        # 步骤4：精调与导出 - 需要内容
+        self._set_card_state("step4", "active" if has_content else "default")
+
+    def _set_card_state(self, step_id: str, state: str):
+        """设置步骤卡片的视觉状态"""
+        card = self._workflow_cards.get(step_id)
+        if card is None:
+            return
+        if state == "active":
+            card.setStyleSheet(CARD_ACTIVE_STYLE)
+        else:
+            card.setStyleSheet(CARD_DEFAULT_STYLE)
 
     def _refresh_properties_panel(self):
         if not hasattr(self, "prop_canvas_info"):
@@ -1144,9 +1824,11 @@ class MainWindow(QMainWindow):
 
     def _on_scene_selection_changed(self):
         self._refresh_properties_panel()
+        self._update_workflow_state()
 
     def _on_scene_modified(self):
         self._refresh_properties_panel()
+        self._update_workflow_state()
 
     def _on_asset_list_current_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None):
         if self._property_syncing:
@@ -1619,8 +2301,9 @@ class MainWindow(QMainWindow):
             return
 
         self._is_importing = False
-        self.statusBar().showMessage("图片加载完成。", 1200)
+        self.statusBar().showMessage("图片加载完成 ✓  下一步：选择排版模板（如 2×2）", 3000)
         self._refresh_properties_panel()
+        self._update_workflow_state()
         self._schedule_history_commit()
 
     # ----------------- 画布 -----------------
@@ -1667,19 +2350,17 @@ class MainWindow(QMainWindow):
             apply_grid_layout(use_items, page_w, page_h, rows, cols, margin=40, gap=20)
             if had_auto and self.last_numbering_cfg:
                 self._create_auto_labels(self.last_numbering_cfg)
-            self.statusBar().showMessage(f"已完成 {rows}×{cols} 排版。", 1000)
+            self.statusBar().showMessage(f"已完成 {rows}×{cols} 排版 ✓  下一步：一键编号或直接导出", 3000)
+            self._update_workflow_state()
             self._schedule_history_commit()
         except Exception as e:
             QMessageBox.critical(self, "排版失败", str(e))
 
     def apply_custom_layout(self):
-        rows, ok = QInputDialog.getInt(self, "自定义排版", "行数", 2, 1, 30, 1)
-        if not ok:
+        dlg = CustomLayoutDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        cols, ok = QInputDialog.getInt(self, "自定义排版", "列数", 2, 1, 30, 1)
-        if not ok:
-            return
-        self.apply_layout(rows, cols)
+        self.apply_layout(dlg.get_rows(), dlg.get_cols())
 
     # ----------------- 网格 -----------------
     def toggle_snap(self, checked: bool):
@@ -1900,7 +2581,7 @@ class MainWindow(QMainWindow):
         self.last_numbering_cfg = cfg
         self._create_auto_labels(cfg)
         self._refresh_properties_panel()
-        self.statusBar().showMessage("已完成自动编号。", 1000)
+        self.statusBar().showMessage("已完成自动编号 ✓  下一步：导出为图片或 PDF", 3000)
         self._schedule_history_commit()
 
     def edit_selected_label_style(self):
@@ -2167,6 +2848,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("不支持该格式。请选择 jpg/png/tiff/pdf/svg。")
 
             QMessageBox.information(self, "导出成功", f"已导出：\n{path}")
+            self.statusBar().showMessage("导出完成 ✓  全流程结束", 3000)
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
