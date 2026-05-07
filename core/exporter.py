@@ -9,6 +9,7 @@ from PySide6.QtCore import QBuffer, QIODevice, QRectF, Qt
 from PySide6.QtGui import QImage, QPainter
 
 from app.canvas_view import ImageFrameItem
+from core.image_utils import prepare_image_for_render, _select_best_tiff_frame
 
 
 def _cover_resize(im: Image.Image, target_w: int, target_h: int) -> Image.Image:
@@ -149,9 +150,9 @@ def compose_canvas_image(canvas_view, transparent_bg: bool = False) -> Image.Ima
         if fw <= 0 or fh <= 0:
             continue
 
-        with Image.open(item.source_path) as im:
-            im = ImageOps.exif_transpose(im)
-            im = im.convert("RGBA" if transparent_bg else "RGB")
+        with Image.open(item.source_path) as src_im:
+            src_im = _select_best_tiff_frame(src_im, item.source_path)
+            im = prepare_image_for_render(src_im, path=item.source_path, transparent_bg=transparent_bg)
             im = _apply_image_item_ops(im, item)
 
             mode = getattr(item, "fill_mode", "fit")
@@ -204,6 +205,16 @@ def compose_canvas_image(canvas_view, transparent_bg: bool = False) -> Image.Ima
     return out_rgba.convert("RGB")
 
 
+def _get_srgb_icc_profile() -> bytes | None:
+    """获取 sRGB ICC profile 数据，用于导出时嵌入。"""
+    try:
+        from PIL import ImageCms
+        profile = ImageCms.createProfile("sRGB")
+        return ImageCms.ImageCmsProfile(profile).tobytes()
+    except Exception:
+        return None
+
+
 def export_canvas_to_image(
     canvas_view,
     output_path: str,
@@ -216,21 +227,48 @@ def export_canvas_to_image(
     ext = os.path.splitext(output_path)[1].lower()
     dpi_tuple = (int(dpi), int(dpi))
 
+    # 获取 sRGB ICC profile 用于嵌入导出文件
+    icc_profile = _get_srgb_icc_profile()
+
     if ext in (".jpg", ".jpeg"):
         # JPEG 不支持透明
-        out.convert("RGB").save(output_path, "JPEG", quality=jpeg_quality, subsampling=0, dpi=dpi_tuple)
+        rgb_out = out.convert("RGB")
+        save_kwargs = {
+            "quality": jpeg_quality,
+            "subsampling": 0,
+            "dpi": dpi_tuple,
+        }
+        if icc_profile:
+            save_kwargs["icc_profile"] = icc_profile
+        rgb_out.save(output_path, "JPEG", **save_kwargs)
 
     elif ext == ".png":
         if transparent_bg:
-            out.convert("RGBA").save(output_path, "PNG", compress_level=3, dpi=dpi_tuple)
+            rgba_out = out.convert("RGBA")
+            save_kwargs = {"compress_level": 3, "dpi": dpi_tuple}
+            if icc_profile:
+                save_kwargs["icc_profile"] = icc_profile
+            rgba_out.save(output_path, "PNG", **save_kwargs)
         else:
-            out.convert("RGB").save(output_path, "PNG", compress_level=3, dpi=dpi_tuple)
+            rgb_out = out.convert("RGB")
+            save_kwargs = {"compress_level": 3, "dpi": dpi_tuple}
+            if icc_profile:
+                save_kwargs["icc_profile"] = icc_profile
+            rgb_out.save(output_path, "PNG", **save_kwargs)
 
     elif ext in (".tif", ".tiff"):
         if transparent_bg:
-            out.convert("RGBA").save(output_path, "TIFF", compression="tiff_adobe_deflate", dpi=dpi_tuple)
+            rgba_out = out.convert("RGBA")
+            save_kwargs = {"compression": "tiff_adobe_deflate", "dpi": dpi_tuple}
+            if icc_profile:
+                save_kwargs["icc_profile"] = icc_profile
+            rgba_out.save(output_path, "TIFF", **save_kwargs)
         else:
-            out.convert("RGB").save(output_path, "TIFF", compression="tiff_lzw", dpi=dpi_tuple)
+            rgb_out = out.convert("RGB")
+            save_kwargs = {"compression": "tiff_lzw", "dpi": dpi_tuple}
+            if icc_profile:
+                save_kwargs["icc_profile"] = icc_profile
+            rgb_out.save(output_path, "TIFF", **save_kwargs)
 
     else:
         raise ValueError("暂不支持该导出格式。请选择 jpg/png/tiff。")
@@ -247,7 +285,8 @@ def export_canvas_to_pdf(canvas_view, output_path: str, dpi: int = 300, transpar
     height_pt = page_h / float(dpi) * 72.0
 
     buf = BytesIO()
-    out.save(buf, "PNG")  # PNG 可带 alpha
+    # 使用 PNG 格式嵌入 PDF，保留 alpha 通道信息
+    out.save(buf, "PNG")
     buf.seek(0)
 
     c = pdf_canvas.Canvas(output_path, pagesize=(width_pt, height_pt))
@@ -261,22 +300,41 @@ def export_canvas_to_svg(canvas_view, output_path: str, dpi: int = 300, transpar
 
     out = compose_canvas_image(canvas_view, transparent_bg=transparent_bg)
     page_w, page_h = out.size
+    dpi_tuple = (int(dpi), int(dpi))
 
+    # 嵌入 PNG 图像到 SVG
+    png_for_embed = out.convert("RGBA" if transparent_bg else "RGB")
     buf = BytesIO()
-    out.save(buf, "PNG")
+    png_for_embed.save(buf, "PNG", compress_level=3, dpi=dpi_tuple)
     raw = buf.getvalue()
     b64 = base64.b64encode(raw).decode("ascii")
 
+    # 创建 SVG 文件，使用完整的命名空间声明以提高兼容性
     dwg = svgwrite.Drawing(
         output_path,
         size=(f"{page_w}px", f"{page_h}px"),
         profile="full",
     )
-    dwg.add(
-        dwg.image(
-            href=f"data:image/png;base64,{b64}",
-            insert=(0, 0),
-            size=(page_w, page_h),
-        )
+
+    # 添加必要的命名空间声明
+    dwg.attribs["xmlns"] = "http://www.w3.org/2000/svg"
+    dwg.attribs["xmlns:xlink"] = "http://www.w3.org/1999/xlink"
+
+    # 设置 viewBox 确保正确的缩放行为
+    dwg.viewbox(0, 0, page_w, page_h)
+
+    # 添加背景矩形（非透明模式）
+    if not transparent_bg:
+        dwg.add(dwg.rect(insert=(0, 0), size=(page_w, page_h), fill="white"))
+
+    # 嵌入图像，使用 xlink:href 以提高旧版查看器兼容性
+    img_element = dwg.image(
+        href=f"data:image/png;base64,{b64}",
+        insert=(0, 0),
+        size=(page_w, page_h),
     )
+    # 同时设置 xlink:href 属性以提高兼容性
+    img_element.attribs["xlink:href"] = f"data:image/png;base64,{b64}"
+    dwg.add(img_element)
+
     dwg.save()

@@ -31,7 +31,7 @@ class HistoryManager:
         if cur == state:
             return False
 
-        # 如果当前不在历史末尾，先截断“未来分支”
+        # 如果当前不在历史末尾，先截断"未来分支"
         if self._index < len(self._states) - 1:
             self._states = self._states[: self._index + 1]
 
@@ -57,3 +57,24 @@ class HistoryManager:
             return None
         self._index += 1
         return self._states[self._index]
+
+    # ---- 只读接口（用于 UI 历史面板） ----
+    def current_index(self) -> int:
+        """返回当前历史游标位置。"""
+        return self._index
+
+    def snapshot_count(self) -> int:
+        """返回历史快照总数。"""
+        return len(self._states)
+
+    def snapshot_list(self) -> list[dict]:
+        """返回历史简要列表，用于 UI 渲染。"""
+        out = []
+        for i, _state in enumerate(self._states):
+            out.append({
+                "index": i,
+                "is_current": i == self._index,
+                "can_undo_to": i < self._index,
+                "can_redo_to": i > self._index,
+            })
+        return out
