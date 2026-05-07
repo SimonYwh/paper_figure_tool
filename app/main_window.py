@@ -47,6 +47,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTabWidget,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -424,6 +426,7 @@ class NumberingDialog(QDialog):
         self.style_combo.addItems(self.STYLE_OPTIONS)
 
         self.font_combo = QFontComboBox()
+        self.font_combo.setEditable(True)  # 允许直接点击编辑
         self.font_combo.setCurrentFont(QFont("Times New Roman", 20))
 
         self.size_spin = QSpinBox()
@@ -681,6 +684,7 @@ class LabelStyleDialog(QDialog):
         self.text_edit = QLineEdit(label_item.text)
 
         self.font_combo = QFontComboBox()
+        self.font_combo.setEditable(True)  # 允许直接点击编辑
         self.font_combo.setCurrentFont(label_item.font_obj)
 
         self.size_spin = QSpinBox()
@@ -722,6 +726,43 @@ class TextBoxFontDialogCN(QDialog):
         self.setWindowTitle("设置文本框字体和大小")
 
         self.font_combo = QFontComboBox()
+        self.font_combo.setEditable(True)  # 允许直接点击编辑
+        self.font_combo.setCurrentFont(base_font)
+
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(6, 300)
+        size = base_font.pointSize()
+        if size <= 0:
+            size = 14
+        self.size_spin.setValue(size)
+
+        layout = QFormLayout(self)
+        layout.addRow("字体：", self.font_combo)
+        layout.addRow("字号：", self.size_spin)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _localize_dialog_buttons(btn_box)
+
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addRow(btn_box)
+
+    def selected_font(self) -> QFont:
+        f = QFont(self.font_combo.currentFont())
+        f.setPointSize(int(self.size_spin.value()))
+        return f
+
+
+class NumberingFontDialogCN(QDialog):
+    """编号字体选择对话框，允许直接点击编辑"""
+    def __init__(self, base_font: QFont, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("设置编号字体和大小")
+
+        self.font_combo = QFontComboBox()
+        self.font_combo.setEditable(True)  # 允许直接点击编辑
         self.font_combo.setCurrentFont(base_font)
 
         self.size_spin = QSpinBox()
@@ -1624,8 +1665,29 @@ class MainWindow(QMainWindow):
         self.prop_selection_info.setWordWrap(True)
         self.prop_selection_info.setStyleSheet(INFO_STYLE)
 
-        self.prop_asset_list = QListWidget()
+        # 使用 QTreeWidget 实现可展开的素材列表（仅打包编号和文本框）
+        self.prop_asset_list = QTreeWidget()
         self.prop_asset_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.prop_asset_list.setHeaderHidden(True)
+        self.prop_asset_list.setRootIsDecorated(True)
+        self.prop_asset_list.setItemsExpandable(True)
+        # 设置展开/折叠行为：点击父项也可以展开/折叠
+        self.prop_asset_list.setExpandsOnDoubleClick(False)
+        
+        # 创建两个顶层节点：编号和文本框（图片保持扁平显示在树外，或也放入树中？）
+        # 根据需求“只打包编号和文本框”，我们将编号和文本框放入树中，图片仍用扁平列表？
+        # 但为了统一，我们全部放入树中，但只有编号和文本框有父节点分组
+        # 实际上更好的方式是：图片直接作为顶级项，编号和文本框分别作为两个可折叠的组
+        # 这里我们采用：所有项都在树中，但编号和文本框分别放在两个父节点下
+        
+        self._numbering_parent_item = QTreeWidgetItem(self.prop_asset_list, ["🔢 编号"])
+        self._textbox_parent_item = QTreeWidgetItem(self.prop_asset_list, ["📝 文本框"])
+        # 默认展开
+        self.prop_asset_list.expandItem(self._numbering_parent_item)
+        self.prop_asset_list.expandItem(self._textbox_parent_item)
+        
+        # 用于映射树项到实际对象的字典
+        self._asset_ref_map = {}
 
         self.prop_asset_name = QLineEdit()
         self.prop_asset_name.setPlaceholderText("素材显示名称")
@@ -1784,12 +1846,14 @@ class MainWindow(QMainWindow):
             card.setStyleSheet(CARD_DEFAULT_STYLE)
 
     def _refresh_properties_panel(self):
-        if not hasattr(self, "prop_canvas_info"):
+        if not hasattr(self, "prop_asset_list"):
             return
 
-        imgs = self.canvas_view.image_items()
-        labels = [it for it in self.canvas_view.scene().items() if isinstance(it, LabelItem)]
-        text_boxes = [it for it in self.canvas_view.scene().items() if isinstance(it, TextBoxItem)]
+        # 使用新的有序方法获取所有项
+        all_items = self.canvas_view.all_canvas_items_ordered()
+        imgs = [it for it in all_items if isinstance(it, ImageFrameItem)]
+        labels = [it for it in all_items if isinstance(it, LabelItem)]
+        text_boxes = [it for it in all_items if isinstance(it, TextBoxItem)]
 
         selected = self.canvas_view.scene().selectedItems()
         sel_img = [it for it in selected if isinstance(it, ImageFrameItem)]
@@ -1805,33 +1869,83 @@ class MainWindow(QMainWindow):
             f"共 {len(selected)} 项（图片 {len(sel_img)} / 编号 {len(sel_label)} / 文本框 {len(sel_text)}）"
         )
 
+        # 构建统一的素材列表，包含图片、编号和文本框
         old_current = self.prop_asset_list.currentItem()
         old_ref = self._asset_ref_map.get(id(old_current)) if old_current else None
-        focus_img = sel_img[0] if len(sel_img) == 1 else old_ref
-        if focus_img not in imgs:
-            focus_img = None
-
+        
+        # 确定当前焦点项
+        focus_item = None
+        if len(sel_img) == 1:
+            focus_item = sel_img[0]
+        elif len(sel_label) == 1:
+            focus_item = sel_label[0]
+        elif len(sel_text) == 1:
+            focus_item = sel_text[0]
+        elif old_ref and old_ref in all_items:
+            focus_item = old_ref
+        
         self._property_syncing = True
         try:
-            self.prop_asset_list.clear()
+            # 清空树形列表（但保留父节点）
+            self._numbering_parent_item.takeChildren()
+            self._textbox_parent_item.takeChildren()
+            # 移除所有顶级项中的图片项（如果有）
+            root = self.prop_asset_list.invisibleRootItem()
+            for i in range(root.childCount() - 1, -1, -1):
+                child = root.child(i)
+                if child not in (self._numbering_parent_item, self._textbox_parent_item):
+                    root.removeChild(child)
             self._asset_ref_map.clear()
 
-            for idx, img in enumerate(imgs, start=1):
-                raw_name = str(getattr(img, "display_name", "") or "").strip()
-                if not raw_name:
-                    raw_name = os.path.basename(getattr(img, "source_path", "") or "") or f"素材{idx}"
-                row = QListWidgetItem(f"{idx}. {raw_name}")
-                self.prop_asset_list.addItem(row)
-                self._asset_ref_map[id(row)] = img
-                if img is focus_img:
-                    self.prop_asset_list.setCurrentItem(row)
+            # 按顺序添加所有项到素材列表
+            for idx, item in enumerate(all_items, start=1):
+                if isinstance(item, ImageFrameItem):
+                    raw_name = str(getattr(item, "display_name", "") or "").strip()
+                    if not raw_name:
+                        raw_name = os.path.basename(getattr(item, "source_path", "") or "") or f"图片{idx}"
+                    icon_type = "🖼️"
+                    # 图片作为顶级项
+                    row = QTreeWidgetItem([f"{icon_type} {raw_name}"])
+                    self.prop_asset_list.addTopLevelItem(row)
+                    self._asset_ref_map[id(row)] = item
+                    if item is focus_item:
+                        self.prop_asset_list.setCurrentItem(row)
+                elif isinstance(item, LabelItem):
+                    raw_name = f"编号：{item.text}"
+                    icon_type = "🔢"
+                    # 编号作为编号父节点的子项
+                    row = QTreeWidgetItem([f"{icon_type} {raw_name}"])
+                    self._numbering_parent_item.addChild(row)
+                    self._asset_ref_map[id(row)] = item
+                    if item is focus_item:
+                        self.prop_asset_list.setCurrentItem(row)
+                elif isinstance(item, TextBoxItem):
+                    text_preview = item.toPlainText().replace("\n", " ")[:20]
+                    if len(item.toPlainText()) > 20:
+                        text_preview += "..."
+                    raw_name = f"文本框：{text_preview}" if text_preview.strip() else "文本框"
+                    icon_type = "📝"
+                    # 文本框作为文本框父节点的子项
+                    row = QTreeWidgetItem([f"{icon_type} {raw_name}"])
+                    self._textbox_parent_item.addChild(row)
+                    self._asset_ref_map[id(row)] = item
+                    if item is focus_item:
+                        self.prop_asset_list.setCurrentItem(row)
+                else:
+                    continue
 
-            if focus_img is not None:
-                cur_name = str(getattr(focus_img, "display_name", "") or "").strip()
-                if not cur_name:
-                    cur_name = os.path.basename(getattr(focus_img, "source_path", "") or "") or "未命名素材"
-                self.prop_asset_name.setEnabled(True)
-                self.prop_asset_name.setText(cur_name)
+            # 更新名称编辑框
+            if focus_item is not None:
+                if isinstance(focus_item, ImageFrameItem):
+                    cur_name = str(getattr(focus_item, "display_name", "") or "").strip()
+                    if not cur_name:
+                        cur_name = os.path.basename(getattr(focus_item, "source_path", "") or "") or "未命名素材"
+                    self.prop_asset_name.setEnabled(True)
+                    self.prop_asset_name.setText(cur_name)
+                else:
+                    # 编号和文本框不可重命名
+                    self.prop_asset_name.setEnabled(False)
+                    self.prop_asset_name.clear()
             else:
                 self.prop_asset_name.setEnabled(False)
                 self.prop_asset_name.clear()
@@ -1850,8 +1964,11 @@ class MainWindow(QMainWindow):
         """画布尺寸更新时立即刷新属性面板显示"""
         self._refresh_properties_panel()
 
-    def _on_asset_list_current_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None):
+    def _on_asset_list_current_changed(self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None):
         if self._property_syncing:
+            return
+        # 如果是父节点（编号或文本框组），不处理
+        if current in (self._numbering_parent_item, self._textbox_parent_item):
             return
         target = self._asset_ref_map.get(id(current)) if current else None
         if target is None:
@@ -1862,11 +1979,18 @@ class MainWindow(QMainWindow):
             for it in self.canvas_view.scene().selectedItems():
                 it.setSelected(False)
             target.setSelected(True)
-            self.prop_asset_name.setEnabled(True)
-            cur_name = str(getattr(target, "display_name", "") or "").strip()
-            if not cur_name:
-                cur_name = os.path.basename(getattr(target, "source_path", "") or "") or "未命名素材"
-            self.prop_asset_name.setText(cur_name)
+            
+            # 只有图片项才启用名称编辑
+            if isinstance(target, ImageFrameItem):
+                self.prop_asset_name.setEnabled(True)
+                cur_name = str(getattr(target, "display_name", "") or "").strip()
+                if not cur_name:
+                    cur_name = os.path.basename(getattr(target, "source_path", "") or "") or "未命名素材"
+                self.prop_asset_name.setText(cur_name)
+            else:
+                # 编号和文本框不可重命名
+                self.prop_asset_name.setEnabled(False)
+                self.prop_asset_name.clear()
         finally:
             self._property_syncing = False
 
@@ -1875,6 +1999,9 @@ class MainWindow(QMainWindow):
             return
 
         current = self.prop_asset_list.currentItem() if hasattr(self, "prop_asset_list") else None
+        # 如果是父节点，不处理
+        if current in (getattr(self, "_numbering_parent_item", None), getattr(self, "_textbox_parent_item", None)):
+            return
         target = self._asset_ref_map.get(id(current)) if current else None
         if target is None:
             selected = self.canvas_view.selected_image_items()
