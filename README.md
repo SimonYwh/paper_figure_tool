@@ -78,7 +78,7 @@ python main.py
 - JPG 不支持透明背景
 - **颜色管理**：导入时自动应用 ICC 色彩管理，将内嵌 ICC profile 转换到 sRGB 色彩空间，确保显示和导出颜色一致
 - **导出嵌入**：PNG/TIFF/JPG 导出时自动嵌入 sRGB ICC profile，确保在其他软件中打开时颜色正确显示
-- **超大图兼容**：已启用强兼容策略（`Image.MAX_IMAGE_PIXELS=None`），并仅过滤 `DecompressionBombWarning`
+- **超大图兼容**：已启用 256MP 安全上限（`Image.MAX_IMAGE_PIXELS=256_000_000`），覆盖绝大多数科研图像，同时防止恶意/损坏文件导致 OOM
 - **调色板透明度兼容**：对 `P/PA` 且 `transparency=bytes` 的图像先转 `RGBA`，避免 Pillow 透明度告警
 
 ## 颜色管理说明

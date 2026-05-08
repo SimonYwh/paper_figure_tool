@@ -8,6 +8,7 @@ from PySide6.QtCore import (
     QEvent,
     QPointF,
     QPropertyAnimation,
+    QSignalBlocker,
     QSize,
     Qt,
     QTimer,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -46,6 +48,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTabWidget,
+    QTextEdit,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -64,8 +67,10 @@ from app.preset_manager import (
     delete_layout_preset,
     delete_numbering_preset,
     load_canvas_presets,
+    load_last_canvas_settings,
     load_layout_presets,
     load_numbering_presets,
+    save_last_canvas_settings,
 )
 from app.theme import (
     ACCENT,
@@ -196,22 +201,9 @@ class CanvasSettingsDialog(QDialog):
         self.btn_save_preset.clicked.connect(self._save_current_as_preset)
         self.btn_delete_preset.clicked.connect(self._delete_selected_preset)
 
-        # 根据当前画布设置初始化单位和数值（从当前尺寸和单位开始）
-        dpi = int(current.dpi)
-        width_px = current.width_px
-        height_px = current.height_px
-        
-        # 尝试匹配当前单位：如果当前尺寸是整数且接近像素值，则使用像素单位
-        if abs(width_px - round(width_px)) < 0.5 and abs(height_px - round(height_px)) < 0.5:
-            # 检查是否接近某个常用单位的整数值
-            mm_w = current.width_mm
-            mm_h = current.height_mm
-            # 优先使用毫米作为默认单位，但显示当前实际值
-            unit_idx = 0  # 默认毫米
-        else:
-            unit_idx = 0
-        
-        self.unit_combo.setCurrentIndex(unit_idx)
+        # 根据当前画布设置初始化单位和数值
+        # 默认使用毫米作为显示单位，通过 mm 精确值换算到当前单位
+        self.unit_combo.setCurrentIndex(0)
         self._apply_spin_ui_by_unit(self.current_unit())
         self._set_spins_from_mm()
         self.preset_combo.setCurrentText(self._guess_preset(self._width_mm, self._height_mm))
@@ -286,42 +278,48 @@ class CanvasSettingsDialog(QDialog):
         return str(self.unit_combo.currentData() or "mm")
 
     def _apply_spin_ui_by_unit(self, unit: str):
-        if unit == "px":
-            self.w_spin.setDecimals(0)
-            self.h_spin.setDecimals(0)
-            self.w_spin.setSingleStep(10)
-            self.h_spin.setSingleStep(10)
-            self.w_spin.setRange(32.0, 40000.0)
-            self.h_spin.setRange(32.0, 40000.0)
-            self.w_spin.setSuffix(" px")
-            self.h_spin.setSuffix(" px")
-        elif unit == "cm":
-            self.w_spin.setDecimals(2)
-            self.h_spin.setDecimals(2)
-            self.w_spin.setSingleStep(0.1)
-            self.h_spin.setSingleStep(0.1)
-            self.w_spin.setRange(1.0, 500.0)
-            self.h_spin.setRange(1.0, 500.0)
-            self.w_spin.setSuffix(" cm")
-            self.h_spin.setSuffix(" cm")
-        elif unit == "in":
-            self.w_spin.setDecimals(3)
-            self.h_spin.setDecimals(3)
-            self.w_spin.setSingleStep(0.1)
-            self.h_spin.setSingleStep(0.1)
-            self.w_spin.setRange(0.5, 200.0)
-            self.h_spin.setRange(0.5, 200.0)
-            self.w_spin.setSuffix(" in")
-            self.h_spin.setSuffix(" in")
-        else:
-            self.w_spin.setDecimals(1)
-            self.h_spin.setDecimals(1)
-            self.w_spin.setSingleStep(1.0)
-            self.h_spin.setSingleStep(1.0)
-            self.w_spin.setRange(10.0, 5000.0)
-            self.h_spin.setRange(10.0, 5000.0)
-            self.w_spin.setSuffix(" mm")
-            self.h_spin.setSuffix(" mm")
+        # 设置 _updating 防止 setRange 自动钳位触发 valueChanged 回调，
+        # 导致 _width_mm / _height_mm 被错误覆盖为最小值
+        self._updating = True
+        try:
+            if unit == "px":
+                self.w_spin.setDecimals(0)
+                self.h_spin.setDecimals(0)
+                self.w_spin.setSingleStep(10)
+                self.h_spin.setSingleStep(10)
+                self.w_spin.setRange(32.0, 40000.0)
+                self.h_spin.setRange(32.0, 40000.0)
+                self.w_spin.setSuffix(" px")
+                self.h_spin.setSuffix(" px")
+            elif unit == "cm":
+                self.w_spin.setDecimals(2)
+                self.h_spin.setDecimals(2)
+                self.w_spin.setSingleStep(0.1)
+                self.h_spin.setSingleStep(0.1)
+                self.w_spin.setRange(1.0, 500.0)
+                self.h_spin.setRange(1.0, 500.0)
+                self.w_spin.setSuffix(" cm")
+                self.h_spin.setSuffix(" cm")
+            elif unit == "in":
+                self.w_spin.setDecimals(3)
+                self.h_spin.setDecimals(3)
+                self.w_spin.setSingleStep(0.1)
+                self.h_spin.setSingleStep(0.1)
+                self.w_spin.setRange(0.5, 200.0)
+                self.h_spin.setRange(0.5, 200.0)
+                self.w_spin.setSuffix(" in")
+                self.h_spin.setSuffix(" in")
+            else:
+                self.w_spin.setDecimals(1)
+                self.h_spin.setDecimals(1)
+                self.w_spin.setSingleStep(1.0)
+                self.h_spin.setSingleStep(1.0)
+                self.w_spin.setRange(10.0, 5000.0)
+                self.h_spin.setRange(10.0, 5000.0)
+                self.w_spin.setSuffix(" mm")
+                self.h_spin.setSuffix(" mm")
+        finally:
+            self._updating = False
 
     def _set_spins_from_mm(self):
         unit = self.current_unit()
@@ -379,8 +377,7 @@ class CanvasSettingsDialog(QDialog):
         self._set_spins_from_mm()
 
     def _on_dpi_changed(self, _value: int):
-        if self.current_unit() == "px":
-            self._set_spins_from_mm()
+        self._set_spins_from_mm()
 
     def _on_size_spin_changed(self, _value: float):
         if self._updating:
@@ -488,10 +485,12 @@ class NumberingDialog(QDialog):
         self.preset_combo.currentTextChanged.connect(self._on_preset_selected)
 
         if current_cfg:
-            if current_cfg.get("style") in self.STYLE_OPTIONS:
-                self.style_combo.setCurrentText(current_cfg.get("style"))
-            if current_cfg.get("corner") in self.CORNER_OPTIONS:
-                self.corner_combo.setCurrentText(current_cfg.get("corner"))
+            style_val = current_cfg.get("style")
+            if style_val in self.STYLE_OPTIONS:
+                self.style_combo.setCurrentText(str(style_val))
+            corner_val = current_cfg.get("corner")
+            if corner_val in self.CORNER_OPTIONS:
+                self.corner_combo.setCurrentText(str(corner_val))
             self.size_spin.setValue(int(current_cfg.get("font_size", 20)))
             self.offset_x.setValue(int(current_cfg.get("offset_x", 8)))
             self.offset_y.setValue(int(current_cfg.get("offset_y", 8)))
@@ -571,6 +570,63 @@ class NumberingDialog(QDialog):
             "offset_x": int(self.offset_x.value()),
             "offset_y": int(self.offset_y.value()),
             "black_bg": bool(self.black_bg.isChecked()),
+        }
+
+
+class TextBoxCreateDialog(QDialog):
+    previewChanged = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("添加文本框")
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlainText("双击文本框可编辑")
+        self.text_edit.setMinimumHeight(80)
+
+        self.font_combo = QFontComboBox()
+        self.font_combo.setEditable(True)
+        self.font_combo.setCurrentFont(QFont("Microsoft YaHei UI"))
+
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(6, 300)
+        self.size_spin.setValue(14)
+
+        layout = QFormLayout(self)
+        layout.addRow("文本内容", self.text_edit)
+        layout.addRow("字体", self.font_combo)
+        layout.addRow("字号", self.size_spin)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _localize_dialog_buttons(btn_box)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addRow(btn_box)
+
+        self.text_edit.textChanged.connect(self._emit_preview)
+        self.font_combo.currentFontChanged.connect(self._emit_preview)
+        self.size_spin.valueChanged.connect(self._emit_preview)
+
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(150)
+        self._preview_timer.timeout.connect(self._do_emit_preview)
+
+        QTimer.singleShot(0, self._do_emit_preview)
+
+    def _emit_preview(self, *_):
+        self._preview_timer.start()
+
+    def _do_emit_preview(self):
+        self.previewChanged.emit(self.get_data())
+
+    def get_data(self) -> dict:
+        return {
+            "text": self.text_edit.toPlainText().strip() or "双击文本框可编辑",
+            "font_family": self.font_combo.currentFont().family(),
+            "font_size": int(self.size_spin.value()),
         }
 
 
@@ -928,7 +984,16 @@ class TextOnlyAction(QAction):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.canvas_settings = CanvasSettings()
+        # 尝试加载上次的画布设置，否则使用默认 A4
+        _last = load_last_canvas_settings()
+        if _last:
+            self.canvas_settings = CanvasSettings(
+                width_mm=float(_last.get("width_mm", 210.0)),
+                height_mm=float(_last.get("height_mm", 297.0)),
+                dpi=int(_last.get("dpi", 300)),
+            )
+        else:
+            self.canvas_settings = CanvasSettings()
         self.default_fill_mode = "fit"
         self.last_numbering_cfg = {
             "style": "(a), (b), (c)",
@@ -948,6 +1013,7 @@ class MainWindow(QMainWindow):
         self._history_block = False
         self._history = HistoryManager(max_steps=120)
         self._last_saved_state_json = ""
+        self._pending_action_label: str = ""
 
         # 图片缩略图缓存（撤销/重做加速）
         self._image_thumb_cache: dict[str, tuple[QPixmap, tuple[int, int]]] = {}
@@ -958,14 +1024,14 @@ class MainWindow(QMainWindow):
 
         # 属性侧栏状态
         self._property_syncing = False
-        self._asset_ref_map: dict[int, ImageFrameItem] = {}
+        self._asset_ref_map: dict[int, QGraphicsItem] = {}
 
         self._history_timer = QTimer(self)
         self._history_timer.setSingleShot(True)
         self._history_timer.setInterval(280)
         self._history_timer.timeout.connect(self._commit_history_snapshot)
 
-        self.setWindowTitle("论文组图排版器 (v1.1.1)")
+        self.setWindowTitle("论文组图排版器 (v1.2.1)")
         self.resize(1320, 820)
         self.setMinimumSize(1180, 720)
 
@@ -1028,6 +1094,9 @@ class MainWindow(QMainWindow):
             dpi=int(c.get("dpi", 300)),
         )
         self.canvas_view.set_canvas_size_px(self.canvas_settings.width_px, self.canvas_settings.height_px)
+        # 仅在用户主动操作时记忆，避免 undo/redo 回放误写 QSettings
+        if not self._history_block and not self._is_importing:
+            save_last_canvas_settings(self.canvas_settings.width_mm, self.canvas_settings.height_mm, self.canvas_settings.dpi)
 
         self.canvas_view.setUpdatesEnabled(False)
         try:
@@ -1058,27 +1127,30 @@ class MainWindow(QMainWindow):
 
     def _load_state_json(self, state_json: str):
         data = json.loads(state_json)
+        prev_block = self._history_block
         self._history_block = True
         try:
             self._apply_project_data(data, base_dir=None, show_missing=False, fit_view=False)
         finally:
-            self._history_block = False
+            self._history_block = prev_block
 
     def _reset_history(self):
         state = self._state_json()
-        self._history.reset(state)
+        self._history.reset(state, "初始状态")
         self._last_saved_state_json = state
         self._update_undo_redo_enabled()
 
-    def _schedule_history_commit(self):
+    def _schedule_history_commit(self, action_label: str = ""):
         if self._history_block or self._is_importing:
             return
+        self._pending_action_label = action_label
         self._history_timer.start()
 
     def _commit_history_snapshot(self):
         if self._history_block or self._is_importing:
             return
-        self._history.push(self._state_json())
+        self._history.push(self._state_json(), self._pending_action_label)
+        self._pending_action_label = ""
         self._update_undo_redo_enabled()
         self._refresh_history_panel()
 
@@ -1109,7 +1181,7 @@ class MainWindow(QMainWindow):
     # ----------------- 项目 -----------------
     def _refresh_window_title(self):
         name = os.path.basename(self.current_project_path) if self.current_project_path else "未命名.figproj"
-        self.setWindowTitle(f"论文组图排版器 (v1.1.1) - {name}")
+        self.setWindowTitle(f"论文组图排版器 (v1.2.1) - {name}")
 
     def _has_unsaved_changes(self) -> bool:
         try:
@@ -1494,7 +1566,7 @@ class MainWindow(QMainWindow):
         )
         title = QLabel("Paper Figure")
         title.setStyleSheet(BRAND_TITLE_STYLE)
-        ver = QLabel("v1.1")
+        ver = QLabel("v1.2.1")
         ver.setStyleSheet(BRAND_BADGE_STYLE)
         brand_layout.addWidget(logo)
         brand_layout.addWidget(title)
@@ -1583,7 +1655,7 @@ class MainWindow(QMainWindow):
                 ("顶对齐", self.act_align_top),
                 ("垂直居中", self.act_align_vc),
                 ("底对齐", self.act_align_bottom),
-                ("导出...", self.act_export),
+                ("导出", self.act_export),
             ]),
         ]
 
@@ -1618,10 +1690,10 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         # 网格吸附开关
-        snap_cb = QCheckBox("网格吸附")
-        snap_cb.setChecked(True)
-        snap_cb.toggled.connect(self.toggle_snap)
-        layout.addWidget(snap_cb)
+        self._snap_cb = QCheckBox("网格吸附")
+        self._snap_cb.setChecked(True)
+        self._snap_cb.toggled.connect(self.toggle_snap)
+        layout.addWidget(self._snap_cb)
 
         # 清空按钮
         clear_btn = QPushButton("清空画布")
@@ -1769,8 +1841,14 @@ class MainWindow(QMainWindow):
         for snap in snapshots:
             idx = snap["index"]
             is_current = snap["is_current"]
+            action_label = snap.get("action_label", "")
             prefix = "▸ " if is_current else "    "
-            label = f"{prefix}初始状态" if idx == 0 else f"{prefix}步骤 {idx}"
+            if idx == 0:
+                label = f"{prefix}初始状态"
+            elif action_label:
+                label = f"{prefix}步骤 {idx} · {action_label}"
+            else:
+                label = f"{prefix}步骤 {idx}"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, idx)
             if is_current:
@@ -2014,11 +2092,13 @@ class MainWindow(QMainWindow):
         if not name:
             name = os.path.basename(getattr(target, "source_path", "") or "") or "未命名素材"
 
-        if name == str(getattr(target, "display_name", "") or ""):
-            self.prop_asset_name.setText(name)
+        if isinstance(target, ImageFrameItem):
+            if name == str(target.display_name or ""):
+                self.prop_asset_name.setText(name)
+                return
+            target.display_name = name
+        else:
             return
-
-        target.display_name = name
         self._refresh_properties_panel()
         self.canvas_view.notify_modified()
         self.statusBar().showMessage("素材名称已更新。", 1000)
@@ -2451,7 +2531,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("图片加载完成 ✓  下一步：选择排版模板（如 2×2）", 3000)
         self._refresh_properties_panel()
         self._update_workflow_state()
-        self._schedule_history_commit()
+        self._schedule_history_commit("插入图片")
 
     # ----------------- 画布 -----------------
     def set_canvas(self):
@@ -2459,13 +2539,17 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self.canvas_settings = dlg.get_settings()
+        self.canvas_view.set_canvas_size_px(
+            self.canvas_settings.width_px, self.canvas_settings.height_px
+        )
+        save_last_canvas_settings(self.canvas_settings.width_mm, self.canvas_settings.height_mm, self.canvas_settings.dpi)
         self._refresh_properties_panel()
         QTimer.singleShot(0, self.canvas_view.fit_page)
         self.statusBar().showMessage(
             f"画布已更新: {self.canvas_settings.width_mm}×{self.canvas_settings.height_mm} mm @ {self.canvas_settings.dpi} DPI",
             2200,
         )
-        self._schedule_history_commit()
+        self._schedule_history_commit("修改画布尺寸")
 
     # ----------------- 排版 -----------------
     def _layout_target_items(self):
@@ -2499,7 +2583,7 @@ class MainWindow(QMainWindow):
                 self._create_auto_labels(self.last_numbering_cfg)
             self.statusBar().showMessage(f"已完成 {rows}×{cols} 排版 ✓  下一步：一键编号或直接导出", 3000)
             self._update_workflow_state()
-            self._schedule_history_commit()
+            self._schedule_history_commit("排版布局")
         except Exception as e:
             QMessageBox.critical(self, "排版失败", str(e))
 
@@ -2514,6 +2598,11 @@ class MainWindow(QMainWindow):
         self.canvas_view.snap_enabled = checked
         self.canvas_view.show_grid = checked
         self.canvas_view.viewport().update()
+        # 同步工具栏 action 和侧栏 checkbox 的状态
+        with QSignalBlocker(self.act_snap):
+            self.act_snap.setChecked(checked)
+        with QSignalBlocker(self._snap_cb):
+            self._snap_cb.setChecked(checked)
         self.statusBar().showMessage("网格吸附已开启" if checked else "网格吸附已关闭", 900)
 
     # ----------------- 对齐/分布 -----------------
@@ -2571,7 +2660,7 @@ class MainWindow(QMainWindow):
 
         self._batch_without_snap(_do)
         self.statusBar().showMessage("对齐完成。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("对齐")
 
     def distribute_selected(self, mode: str):
         items = self._movable_selected_items()
@@ -2613,7 +2702,7 @@ class MainWindow(QMainWindow):
         else:
             self._batch_without_snap(_do_v)
             self.statusBar().showMessage("垂直等距完成。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("等距分布")
 
     # ----------------- 编号 -----------------
     @staticmethod
@@ -2729,7 +2818,7 @@ class MainWindow(QMainWindow):
         self._create_auto_labels(cfg)
         self._refresh_properties_panel()
         self.statusBar().showMessage("已完成自动编号 ✓  下一步：导出为图片或 PDF", 3000)
-        self._schedule_history_commit()
+        self._schedule_history_commit("自动编号")
 
     def edit_selected_label_style(self):
         labels = [it for it in self.canvas_view.scene().selectedItems() if isinstance(it, LabelItem)]
@@ -2748,27 +2837,50 @@ class MainWindow(QMainWindow):
         lb.set_black_bg(bool(data["black_bg"]))
         lb.is_auto_label = False
         self.statusBar().showMessage("编号样式已更新。", 1000)
-        self._schedule_history_commit()
+        self._schedule_history_commit("编辑编号样式")
 
     # ----------------- 文本框 -----------------
     def add_text_box(self):
-        text, ok = QInputDialog.getMultiLineText(
-            self, "添加文本框", "文本内容：", "双击文本框可编辑"
-        )
-        if not ok:
-            return
-        text = text.strip() or "双击文本框可编辑"
+        state_before_preview = self._state_json()
+        self._preview_textbox_item = None
 
-        size, ok = QInputDialog.getInt(self, "文本框字号", "字号：", 14, 6, 300, 1)
-        if not ok:
+        dlg = TextBoxCreateDialog(self)
+
+        def _on_preview(cfg: dict):
+            self._create_text_box_preview(cfg)
+
+        dlg.previewChanged.connect(_on_preview)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            if self._preview_textbox_item is not None:
+                self.canvas_view.scene().removeItem(self._preview_textbox_item)
+                self._preview_textbox_item = None
+            self._load_state_json(state_before_preview)
+            self._refresh_properties_panel()
             return
 
-        item = TextBoxItem(text, self.canvas_view, font=QFont("Microsoft YaHei UI", size), width=320)
-        item.setZValue(3400)
-        self.canvas_view.scene().addItem(item)
-        item.setPos(40, 40)
+        if self._preview_textbox_item is not None:
+            self._preview_textbox_item = None
+
+        self._refresh_properties_panel()
         self.statusBar().showMessage("文本框已添加。", 1000)
-        self._schedule_history_commit()
+        self._schedule_history_commit("插入文本框")
+
+    def _create_text_box_preview(self, cfg: dict):
+        if self._preview_textbox_item is not None:
+            self.canvas_view.scene().removeItem(self._preview_textbox_item)
+            self._preview_textbox_item = None
+
+        item = TextBoxItem(
+            cfg["text"],
+            self.canvas_view,
+            font=QFont(cfg["font_family"], cfg["font_size"]),
+            width=320,
+        )
+        item.setZValue(3400)
+        item.setPos(40, 40)
+        self.canvas_view.scene().addItem(item)
+        self._preview_textbox_item = item
 
     def _selected_text_boxes(self) -> list[TextBoxItem]:
         return [it for it in self.canvas_view.scene().selectedItems() if isinstance(it, TextBoxItem)]
@@ -2788,7 +2900,7 @@ class MainWindow(QMainWindow):
             b.setFont(QFont(chosen))
 
         self.statusBar().showMessage(f"已更新 {len(boxes)} 个文本框字体和字号。", 1000)
-        self._schedule_history_commit()
+        self._schedule_history_commit("修改文本框字体")
 
     def set_selected_textbox_font_size(self):
         boxes = self._selected_text_boxes()
@@ -2810,7 +2922,7 @@ class MainWindow(QMainWindow):
             b.setFont(f)
 
         self.statusBar().showMessage(f"已将 {len(boxes)} 个文本框字号设为 {size}。", 1000)
-        self._schedule_history_commit()
+        self._schedule_history_commit("修改文本框字号")
 
     def set_selected_textbox_style(self):
         boxes = self._selected_text_boxes()
@@ -2833,7 +2945,7 @@ class MainWindow(QMainWindow):
             )
 
         self.statusBar().showMessage(f"已更新 {len(boxes)} 个文本框样式。", 1000)
-        self._schedule_history_commit()
+        self._schedule_history_commit("修改文本框样式")
 
     # ----------------- 图片编辑 -----------------
     def _selected_image_items_or_warn(self) -> list[ImageFrameItem]:
@@ -2850,7 +2962,7 @@ class MainWindow(QMainWindow):
         for it in items:
             it.rotate_left()
         self.statusBar().showMessage(f"已左转 {len(items)} 张图片。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("左转图片")
 
     def rotate_selected_images_right(self):
         items = self._selected_image_items_or_warn()
@@ -2859,7 +2971,7 @@ class MainWindow(QMainWindow):
         for it in items:
             it.rotate_right()
         self.statusBar().showMessage(f"已右转 {len(items)} 张图片。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("右转图片")
 
     def flip_selected_images_h(self):
         items = self._selected_image_items_or_warn()
@@ -2868,7 +2980,7 @@ class MainWindow(QMainWindow):
         for it in items:
             it.flip_horizontal()
         self.statusBar().showMessage(f"已水平翻转 {len(items)} 张图片。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("水平翻转图片")
 
     def flip_selected_images_v(self):
         items = self._selected_image_items_or_warn()
@@ -2877,7 +2989,7 @@ class MainWindow(QMainWindow):
         for it in items:
             it.flip_vertical()
         self.statusBar().showMessage(f"已垂直翻转 {len(items)} 张图片。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("垂直翻转图片")
 
     def reset_selected_image_transform(self):
         items = self._selected_image_items_or_warn()
@@ -2886,7 +2998,7 @@ class MainWindow(QMainWindow):
         for it in items:
             it.reset_transform_ops()
         self.statusBar().showMessage(f"已重置 {len(items)} 张图片变换。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("重置图片变换")
 
     def set_selected_image_border(self):
         items = self._selected_image_items_or_warn()
@@ -2910,7 +3022,7 @@ class MainWindow(QMainWindow):
             for it in items:
                 it.set_border(0, getattr(it, "border_color", (0, 0, 0)))
             self.statusBar().showMessage(f"已清除 {len(items)} 张图片边框。", 900)
-            self._schedule_history_commit()
+            self._schedule_history_commit("清除图片边框")
             return
 
         c0 = getattr(items[0], "border_color", (0, 0, 0))
@@ -2923,7 +3035,7 @@ class MainWindow(QMainWindow):
             it.set_border(w, color)
 
         self.statusBar().showMessage(f"已设置 {len(items)} 张图片边框。", 900)
-        self._schedule_history_commit()
+        self._schedule_history_commit("设置图片边框")
 
     # ----------------- 导出 -----------------
     def _ask_export_transparent_mode(self, ext: str) -> tuple[bool, bool]:
@@ -2978,6 +3090,15 @@ class MainWindow(QMainWindow):
         if not ok:
             return
 
+        # 显示进度对话框，给用户视觉反馈
+        progress = QProgressDialog("正在导出图像，请稍候…", "", 0, 0, self)
+        progress.setWindowTitle("导出中")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()  # 确保进度对话框渲染出来
+
         try:
             if ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
                 export_canvas_to_image(
@@ -2994,9 +3115,11 @@ class MainWindow(QMainWindow):
             else:
                 raise ValueError("不支持该格式。请选择 jpg/png/tiff/pdf/svg。")
 
+            progress.close()
             QMessageBox.information(self, "导出成功", f"已导出：\n{path}")
             self.statusBar().showMessage("导出完成 ✓  全流程结束", 3000)
         except Exception as e:
+            progress.close()
             QMessageBox.critical(self, "导出失败", str(e))
 
     def closeEvent(self, event: QCloseEvent):
@@ -3028,4 +3151,4 @@ class MainWindow(QMainWindow):
         if ret == QMessageBox.StandardButton.Yes:
             self.canvas_view.remove_all_user_items()
             self.statusBar().showMessage("已清空。", 900)
-            self._schedule_history_commit()
+            self._schedule_history_commit("清空画布")

@@ -73,6 +73,37 @@ def delete_canvas_preset(name: str) -> None:
 
 
 # ============================================================
+# 上次画布设置记忆（跨会话持久化）
+# ============================================================
+
+_KEY_LAST_CANVAS = "canvas/last_settings"
+
+
+def save_last_canvas_settings(width_mm: float, height_mm: float, dpi: int) -> None:
+    """保存当前画布设置，下次启动时自动恢复。"""
+    s = _settings()
+    s.setValue(_KEY_LAST_CANVAS, json.dumps({
+        "width_mm": float(width_mm),
+        "height_mm": float(height_mm),
+        "dpi": int(dpi),
+    }, ensure_ascii=False))
+
+
+def load_last_canvas_settings() -> dict | None:
+    """加载上次的画布设置，不存在时返回 None。"""
+    s = _settings()
+    raw = s.value(_KEY_LAST_CANVAS, "")
+    if isinstance(raw, str) and raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+# ============================================================
 # 编号样式预设
 # ============================================================
 

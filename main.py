@@ -33,7 +33,8 @@ def _qt_message_handler(mode: QtMsgType, _context, message: str):
         QtMsgType.QtFatalMsg: "[QtFatal]",
     }.get(mode, "[Qt]")
 
-    sys.__stderr__.write(f"{prefix} {message}\n")
+    if sys.__stderr__ is not None:
+        sys.__stderr__.write(f"{prefix} {message}\n")
 
 
 def main() -> int:
