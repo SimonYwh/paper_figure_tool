@@ -179,8 +179,8 @@ class ImageFrameItem(QGraphicsPixmapItem):
         if self.canvas_view:
             self.canvas_view.notify_modified()
 
-    def paint(self, painter, option, widget=None):
-        super().paint(painter, option, widget)
+    def paint(self, painter, option, widget=None):  # type: ignore[override]
+        super().paint(painter, option, widget)  # pyright: ignore[reportArgumentType]
 
         if self.border_width > 0:
             bw = float(self.border_width)
@@ -451,7 +451,7 @@ class TextBoxItem(QGraphicsTextItem):
             self.prepareGeometryChange()
             self._box_h = h
 
-    def setFont(self, font: QFont):
+    def setFont(self, font):  # type: ignore[override]
         if isinstance(font, bool):
             return
         if not isinstance(font, QFont):
@@ -531,7 +531,7 @@ class TextBoxItem(QGraphicsTextItem):
             return Qt.CursorShape.SizeBDiagCursor
         return Qt.CursorShape.ArrowCursor
 
-    def _selected_textboxes(self):
+    def _selected_text_boxes(self):
         sc = self.scene()
         if sc is None:
             return [self]
@@ -673,7 +673,7 @@ class TextBoxItem(QGraphicsTextItem):
                             it.setSelected(False)
                 self.setSelected(True)
 
-            targets = self._selected_textboxes()
+            targets = self._selected_text_boxes()
 
             menu = QMenu()
             act_edit = menu.addAction("编辑文本")
@@ -709,17 +709,17 @@ class TextBoxItem(QGraphicsTextItem):
 
             elif chosen == act_font:
                 mw = self.canvas_view.window() if self.canvas_view else None
-                if mw and hasattr(mw, "set_selected_textbox_font"):
+                if mw:
                     mw.set_selected_textbox_font()
 
             elif chosen == act_size:
                 mw = self.canvas_view.window() if self.canvas_view else None
-                if mw and hasattr(mw, "set_selected_textbox_font_size"):
+                if mw:
                     mw.set_selected_textbox_font_size()
 
             elif chosen == act_style:
                 mw = self.canvas_view.window() if self.canvas_view else None
-                if mw and hasattr(mw, "set_selected_textbox_style"):
+                if mw:
                     mw.set_selected_textbox_style()
 
             elif chosen == act_front:
@@ -853,7 +853,7 @@ class TextBoxItem(QGraphicsTextItem):
         self._sync_height_to_content(force=False)
         self.update()
 
-    def paint(self, painter, option, widget=None):
+    def paint(self, painter, option, widget=None):  # type: ignore[override]
         r = self._frame_rect()
 
         fill = QColor(self._fill_color)
@@ -869,7 +869,7 @@ class TextBoxItem(QGraphicsTextItem):
 
         painter.save()
         painter.setClipRect(r)
-        super().paint(painter, option, widget)
+        super().paint(painter, option, widget)  # pyright: ignore[reportArgumentType]
         painter.restore()
 
         if self.isSelected():
@@ -1064,7 +1064,7 @@ class CanvasView(QGraphicsView):
             return
         super().dropEvent(event)
 
-    def drawForeground(self, painter: QPainter, rect: QRectF):
+    def drawForeground(self, painter: QPainter, rect):  # type: ignore[override]
         super().drawForeground(painter, rect)
         if not self.show_grid:
             return
@@ -1082,14 +1082,19 @@ class CanvasView(QGraphicsView):
         start_y = int(vis.top() // g) * g
         end_y = int(vis.bottom()) + g
 
+        vis_top = int(vis.top())
+        vis_bottom = int(vis.bottom())
+        vis_left = int(vis.left())
+        vis_right = int(vis.right())
+
         x = start_x
         while x <= end_x:
-            painter.drawLine(x, vis.top(), x, vis.bottom())
+            painter.drawLine(x, vis_top, x, vis_bottom)
             x += g
 
         y = start_y
         while y <= end_y:
-            painter.drawLine(vis.left(), y, vis.right(), y)
+            painter.drawLine(vis_left, y, vis_right, y)
             y += g
 
     def wheelEvent(self, event):
@@ -1116,17 +1121,17 @@ class CanvasView(QGraphicsView):
 
         mw = self.window()
         if event.matches(QKeySequence.StandardKey.Copy):
-            if mw and hasattr(mw, "copy_selected_items"):
+            if mw:
                 mw.copy_selected_items()
                 event.accept()
                 return
         if event.matches(QKeySequence.StandardKey.Cut):
-            if mw and hasattr(mw, "cut_selected_items"):
+            if mw:
                 mw.cut_selected_items()
                 event.accept()
                 return
         if event.matches(QKeySequence.StandardKey.Paste):
-            if mw and hasattr(mw, "paste_items"):
+            if mw:
                 mw.paste_items()
                 event.accept()
                 return

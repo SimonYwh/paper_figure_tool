@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from typing import Any
@@ -10,6 +11,8 @@ from PySide6.QtGui import QColor, QFont
 from app.canvas_view import ImageFrameItem, LabelItem, TextBoxItem
 from core.image_utils import load_image_thumb_qpixmap
 from core.models import CanvasSettings
+
+_logger = logging.getLogger(__name__)
 
 
 def _font_to_dict(font: QFont) -> dict:
@@ -68,16 +71,10 @@ def _font_from_dict(d: dict | None, fallback: QFont) -> QFont:
 
     f.setItalic(bool(d.get("italic", f.italic())))
 
-    wt_raw = d.get("weight", int(f.weight()))
-    f.setWeight(_coerce_qfont_weight(wt_raw))
-
-    if "bold" in d:
-        if bool(d.get("bold", False)):
-            if int(f.weight()) < int(QFont.Weight.Bold):
-                f.setWeight(QFont.Weight.Bold)
-        else:
-            if int(f.weight()) > int(QFont.Weight.Normal):
-                f.setWeight(QFont.Weight.Normal)
+    if "weight" in d:
+        f.setWeight(_coerce_qfont_weight(d["weight"]))
+    elif "bold" in d:
+        f.setWeight(QFont.Weight.Bold if bool(d["bold"]) else QFont.Weight.Normal)
 
     return f
 
@@ -213,123 +210,137 @@ def apply_project_dict(
     base_dir: str | None = None,
     image_cache: dict | None = None,
 ):
+    """事务式加载项目数据：先构建所有新项，成功后原子性替换场景内容。
+
+    如果构建中途出现未预期异常，场景保持原状不变，避免数据丢失。
+    """
     scene = canvas_view.scene()
     page = canvas_view.page_rect_item
-
-    for it in list(scene.items()):
-        if it is page:
-            continue
-        scene.removeItem(it)
 
     items = data.get("items", [])
     if not isinstance(items, list):
         return []
 
-    missing_paths = []
+    missing_paths: list[str] = []
+    new_items: list = []
 
     for obj in items:
         if not isinstance(obj, dict):
             continue
         t = obj.get("type", "")
 
-        if t == "image":
-            raw_path = str(obj.get("source_path", "")).strip()
-            if not raw_path:
-                continue
+        try:
+            if t == "image":
+                raw_path = str(obj.get("source_path", "")).strip()
+                if not raw_path:
+                    continue
 
-            path = raw_path
-            if not os.path.isabs(path) and base_dir:
-                path = os.path.normpath(os.path.join(base_dir, path))
+                path = raw_path
+                if not os.path.isabs(path) and base_dir:
+                    path = os.path.normpath(os.path.join(base_dir, path))
 
-            if not os.path.exists(path):
-                missing_paths.append(raw_path)
-                continue
+                if not os.path.exists(path):
+                    missing_paths.append(raw_path)
+                    continue
 
-            try:
-                pixmap, (ow, oh) = _get_thumb_with_cache(path, max_thumb=max_thumb, image_cache=image_cache)
-            except Exception:
-                missing_paths.append(raw_path)
-                continue
+                try:
+                    pixmap, (ow, oh) = _get_thumb_with_cache(path, max_thumb=max_thumb, image_cache=image_cache)
+                except Exception:
+                    missing_paths.append(raw_path)
+                    continue
 
-            fill_mode = str(obj.get("fill_mode", default_fill_mode))
-            if fill_mode not in ("fit", "cover"):
-                fill_mode = default_fill_mode
+                fill_mode = str(obj.get("fill_mode", default_fill_mode))
+                if fill_mode not in ("fit", "cover"):
+                    fill_mode = default_fill_mode
 
-            display_name = str(obj.get("display_name", "") or "").strip()
-            item = ImageFrameItem(
-                path,
-                (ow, oh),
-                pixmap,
-                canvas_view,
-                fill_mode=fill_mode,
-                display_name=display_name,
-            )
-            item.rot90_steps = int(obj.get("rot90_steps", 0)) % 4
-            item.flip_h = bool(obj.get("flip_h", False))
-            item.flip_v = bool(obj.get("flip_v", False))
+                display_name = str(obj.get("display_name", "") or "").strip()
+                item = ImageFrameItem(
+                    path,
+                    (ow, oh),
+                    pixmap,
+                    canvas_view,
+                    fill_mode=fill_mode,
+                    display_name=display_name,
+                )
+                item.rot90_steps = int(obj.get("rot90_steps", 0)) % 4
+                item.flip_h = bool(obj.get("flip_h", False))
+                item.flip_v = bool(obj.get("flip_v", False))
 
-            fw = int(obj.get("frame_w", max(1, pixmap.width())))
-            fh = int(obj.get("frame_h", max(1, pixmap.height())))
-            item.set_frame_size(fw, fh)
+                fw = int(obj.get("frame_w", max(1, pixmap.width())))
+                fh = int(obj.get("frame_h", max(1, pixmap.height())))
+                item.set_frame_size(fw, fh)
 
-            bw = int(obj.get("border_width", 0))
-            bc = obj.get("border_color", [0, 0, 0, 255])
-            c = _list_to_qcolor(bc, QColor(0, 0, 0))
-            item.set_border(bw, c)
+                bw = int(obj.get("border_width", 0))
+                bc = obj.get("border_color", [0, 0, 0, 255])
+                c = _list_to_qcolor(bc, QColor(0, 0, 0))
+                item.set_border(bw, c)
 
-            item.setPos(float(obj.get("x", 0)), float(obj.get("y", 0)))
-            item.setZValue(float(obj.get("z", 0)))
-            scene.addItem(item)
+                item.setPos(float(obj.get("x", 0)), float(obj.get("y", 0)))
+                item.setZValue(float(obj.get("z", 0)))
+                new_items.append(item)
 
-        elif t == "label":
-            font = _font_from_dict(obj.get("font"), QFont("Times New Roman", 18, QFont.Weight.Bold))
-            lb = LabelItem(str(obj.get("text", "")), canvas_view, font=font, padding=int(obj.get("padding", 4)))
+            elif t == "label":
+                font = _font_from_dict(obj.get("font"), QFont("Times New Roman", 18, QFont.Weight.Bold))
+                lb = LabelItem(str(obj.get("text", "")), canvas_view, font=font, padding=int(obj.get("padding", 4)))
 
-            bg_enabled = bool(obj.get("bg_enabled", False))
-            lb.set_black_bg(bg_enabled)
-            if not bg_enabled:
-                lb.text_color = _list_to_qcolor(obj.get("text_color"), QColor(0, 0, 0))
-                lb.bg_color = _list_to_qcolor(obj.get("bg_color"), QColor(0, 0, 0))
+                bg_enabled = bool(obj.get("bg_enabled", False))
+                lb.set_black_bg(bg_enabled)
+                if not bg_enabled:
+                    lb.text_color = _list_to_qcolor(obj.get("text_color"), QColor(0, 0, 0))
+                    lb.bg_color = _list_to_qcolor(obj.get("bg_color"), QColor(0, 0, 0))
 
-            lb.is_auto_label = bool(obj.get("is_auto_label", False))
-            lb.setPos(float(obj.get("x", 0)), float(obj.get("y", 0)))
-            lb.setZValue(float(obj.get("z", 3000)))
-            scene.addItem(lb)
+                lb.is_auto_label = bool(obj.get("is_auto_label", False))
+                lb.setPos(float(obj.get("x", 0)), float(obj.get("y", 0)))
+                lb.setZValue(float(obj.get("z", 3000)))
+                new_items.append(lb)
 
-        elif t == "textbox":
-            font = _font_from_dict(obj.get("font"), QFont("Microsoft YaHei UI", 14))
-            tb = TextBoxItem(
-                str(obj.get("text", "")),
-                canvas_view,
-                font=font,
-                width=float(obj.get("width", 320)),
-            )
-
-            h = float(obj.get("height", getattr(tb, "_box_h", 60)))
-            if hasattr(tb, "_set_box_height"):
-                tb._set_box_height(h)
-            if hasattr(tb, "_sync_height_to_content"):
-                tb._sync_height_to_content(force=False)
-
-            if hasattr(tb, "set_position_locked"):
-                tb.set_position_locked(bool(obj.get("lock_position", False)))
-            if hasattr(tb, "set_size_locked"):
-                tb.set_size_locked(bool(obj.get("lock_size", False)))
-
-            fill_c = _list_to_qcolor(obj.get("fill_color"), QColor(255, 255, 255))
-            fill_alpha = obj.get("fill_alpha", fill_c.alpha())
-            if hasattr(tb, "set_style"):
-                tb.set_style(
-                    text_color=_list_to_qcolor(obj.get("text_color"), QColor(0, 0, 0)),
-                    fill_color=QColor(fill_c.red(), fill_c.green(), fill_c.blue()),
-                    fill_alpha=int(fill_alpha),
-                    border_color=_list_to_qcolor(obj.get("border_color"), QColor(170, 170, 170)),
-                    border_width=int(obj.get("border_width", 1)),
+            elif t == "textbox":
+                font = _font_from_dict(obj.get("font"), QFont("Microsoft YaHei UI", 14))
+                tb = TextBoxItem(
+                    str(obj.get("text", "")),
+                    canvas_view,
+                    font=font,
+                    width=float(obj.get("width", 320)),
                 )
 
-            tb.setPos(float(obj.get("x", 0)), float(obj.get("y", 0)))
-            tb.setZValue(float(obj.get("z", 3400)))
-            scene.addItem(tb)
+                h = float(obj.get("height", getattr(tb, "_box_h", 60)))
+                if hasattr(tb, "_set_box_height"):
+                    tb._set_box_height(h)
+                if hasattr(tb, "_sync_height_to_content"):
+                    tb._sync_height_to_content(force=False)
+
+                if hasattr(tb, "set_position_locked"):
+                    tb.set_position_locked(bool(obj.get("lock_position", False)))
+                if hasattr(tb, "set_size_locked"):
+                    tb.set_size_locked(bool(obj.get("lock_size", False)))
+
+                fill_c = _list_to_qcolor(obj.get("fill_color"), QColor(255, 255, 255))
+                fill_alpha = obj.get("fill_alpha", fill_c.alpha())
+                if hasattr(tb, "set_style"):
+                    tb.set_style(
+                        text_color=_list_to_qcolor(obj.get("text_color"), QColor(0, 0, 0)),
+                        fill_color=QColor(fill_c.red(), fill_c.green(), fill_c.blue()),
+                        fill_alpha=int(fill_alpha),
+                        border_color=_list_to_qcolor(obj.get("border_color"), QColor(170, 170, 170)),
+                        border_width=int(obj.get("border_width", 1)),
+                    )
+
+                tb.setPos(float(obj.get("x", 0)), float(obj.get("y", 0)))
+                tb.setZValue(float(obj.get("z", 3400)))
+                new_items.append(tb)
+
+        except Exception as exc:
+            _logger.warning("加载项目项失败 (type=%s): %s", t, exc)
+            continue
+
+    # 原子性替换：所有新项构建成功后，才清除旧场景并添加新项
+    for it in list(scene.items()):
+        if it is page:
+            continue
+        scene.removeItem(it)
+
+    for item in new_items:
+        scene.addItem(item)
 
     return missing_paths
 
